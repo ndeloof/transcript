@@ -67,6 +67,76 @@ def setup_windows_cuda_dlls():
             os.add_dll_directory(str(bin_dir))
 
 
+def model_is_cached(model_name: str) -> bool:
+    """Vérifie si le modèle Whisper est déjà dans le cache Hugging Face."""
+    try:
+        from faster_whisper.utils import _MODELS
+        repo = _MODELS.get(model_name)
+    except Exception:
+        repo = None
+    repo = repo or f"Systran/faster-whisper-{model_name}"
+    hf_home = Path(os.environ.get("HF_HOME",
+                                  Path.home() / ".cache" / "huggingface"))
+    cache = Path(os.environ.get("HUGGINGFACE_HUB_CACHE", hf_home / "hub"))
+    snapshots = cache / ("models--" + repo.replace("/", "--")) / "snapshots"
+    return snapshots.is_dir() and any(snapshots.iterdir())
+
+
+def preflight(model_name: str, need_drive: bool) -> bool:
+    """Affiche l'état de l'environnement. Retourne False si un ✗ bloque."""
+    ok = True
+
+    def check(status: str, label: str):
+        # status: "ok" (✓), "info" (–), "fail" (✗)
+        nonlocal ok
+        if status == "fail":
+            ok = False
+        mark = {"ok": "✓", "info": "–", "fail": "✗"}[status]
+        print(f"  {mark} {label}")
+
+    print("Vérification de l'environnement :")
+    check("ok", f"Python {sys.version.split()[0]}")
+
+    setup_windows_cuda_dlls()
+    try:
+        import av
+        import ctranslate2
+        import faster_whisper
+
+        check("ok", f"faster-whisper {faster_whisper.__version__} "
+                    f"(ctranslate2 {ctranslate2.__version__})")
+        check("ok", f"décodage audio/vidéo intégré (PyAV {av.__version__}, "
+                    "ffmpeg non requis)")
+        gpus = ctranslate2.get_cuda_device_count()
+        if gpus:
+            check("ok", f"GPU CUDA détecté ({gpus} périphérique(s))")
+        else:
+            check("info", "pas de GPU CUDA → transcription sur CPU (lente)")
+    except Exception as exc:
+        check("fail", f"bibliothèques de transcription : {exc}")
+
+    if model_is_cached(model_name):
+        check("ok", f"modèle {model_name} présent dans le cache")
+    else:
+        check("info", f"modèle {model_name} absent du cache → "
+                      "téléchargé au premier lancement (~3 Go pour large-v3)")
+
+    if need_drive:
+        if CREDENTIALS_FILE.exists():
+            check("ok", f"client OAuth Google ({CREDENTIALS_FILE})")
+        else:
+            check("fail", f"client OAuth Google absent : {CREDENTIALS_FILE} "
+                          "(voir README.md, section Google Cloud)")
+        if TOKEN_FILE.exists():
+            check("ok", "accès Drive déjà autorisé (jeton en cache)")
+        else:
+            check("info", "accès Drive pas encore autorisé → le navigateur "
+                          "s'ouvrira au lancement")
+
+    print()
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # Google Drive
 # ---------------------------------------------------------------------------
@@ -406,9 +476,13 @@ def main() -> int:
     )
     parser.add_argument(
         "source",
+        nargs="?",
         help="URL ou ID d'un dossier Google Drive, ou chemin local "
              "(fichier ou dossier)",
     )
+    parser.add_argument("--check", action="store_true",
+                        help="vérifier l'installation (dépendances, GPU, "
+                             "modèle, accès Google) et quitter")
     parser.add_argument("--language", default=None, metavar="LANG",
                         help="langue de l'audio (fr, en, ...) ; "
                              "auto-détection par défaut")
@@ -427,8 +501,17 @@ def main() -> int:
     if args.language and args.language.lower() == "auto":
         args.language = None
 
+    if args.check:
+        return 0 if preflight(args.model, need_drive=True) else 1
+    if not args.source:
+        parser.error("préciser une source (dossier Drive ou chemin local), "
+                     "ou --check pour vérifier l'installation")
+
     local = Path(args.source).expanduser()
-    if local.exists():
+    is_local = local.exists()
+    if not preflight(args.model, need_drive=not is_local):
+        return 1
+    if is_local:
         return run_local(args, local)
     return run_drive(args)
 

@@ -73,7 +73,12 @@ uv run transcribe.py ~/Videos/reunion.mp4
 
 # Test rapide du pipeline complet avec un petit modèle
 uv run transcribe.py <ID-dossier> --model tiny
+
+# Vérifier l'installation (dépendances, GPU, modèle, accès Google) sans rien transcrire
+uv run transcribe.py --check
 ```
+
+Le même bilan d'environnement s'affiche au début de chaque lancement.
 
 Au premier lancement : le navigateur s'ouvre pour autoriser l'accès Drive
 (jeton mis en cache dans `~/.transcribe/token.json`), et le modèle large-v3

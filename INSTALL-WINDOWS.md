@@ -73,10 +73,32 @@ mkdir $env:USERPROFILE\.transcribe
 copy $env:USERPROFILE\Downloads\credentials.json $env:USERPROFILE\.transcribe\
 ```
 
-## 5. Premier lancement
+## 5. Vérifier l'installation
 
 ```powershell
 cd $env:USERPROFILE\transcribe
+uv run transcribe.py --check
+```
+
+Affiche un bilan de l'installation ; tout doit être ✓ (ou –) :
+
+```
+Vérification de l'environnement :
+  ✓ Python 3.12.x
+  ✓ faster-whisper x.y (ctranslate2 x.y)
+  ✓ décodage audio/vidéo intégré (PyAV x.y, ffmpeg non requis)
+  ✓ GPU CUDA détecté (1 périphérique(s))
+  – modèle large-v3 absent du cache → téléchargé au premier lancement (~3 Go pour large-v3)
+  ✓ client OAuth Google (C:\Users\...\.transcribe\credentials.json)
+  – accès Drive pas encore autorisé → le navigateur s'ouvrira au lancement
+```
+
+Un ✗ indique ce qui manque (et où le corriger). Ce même bilan s'affiche au
+début de chaque lancement.
+
+## 6. Premier lancement
+
+```powershell
 uv run transcribe.py "https://drive.google.com/drive/folders/<ID-du-dossier>"
 ```
 

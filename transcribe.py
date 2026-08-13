@@ -340,7 +340,11 @@ def extract_folder_id(arg: str) -> str:
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
-def scan_drive_folder(drive, folder_id: str) -> tuple[list[dict], set]:
+SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
+
+
+def scan_drive_folder(drive, folder_id: str,
+                      debug: bool = False) -> tuple[list[dict], set]:
     """Parcourt le dossier ET ses sous-dossiers.
 
     Retourne (fichiers audio/vidéo, Docs existants). Chaque fichier porte
@@ -349,25 +353,38 @@ def scan_drive_folder(drive, folder_id: str) -> tuple[list[dict], set]:
     pendant le même parcours, sans appels supplémentaires — forment un
     ensemble de couples (parentId, nom) utilisé pour ignorer les fichiers
     déjà transcrits.
+
+    Les raccourcis Drive (dossiers/fichiers « ajoutés depuis un partage »,
+    mimeType shortcut) sont résolus vers leur cible.
     """
     files = []
     existing_docs = set()
     queue = [(folder_id, "")]
+    visited = {folder_id}
     while queue:
         current_id, prefix = queue.pop(0)
         query = (
             f"'{current_id}' in parents and trashed = false and "
             "(mimeType contains 'audio/' or mimeType contains 'video/' "
             f"or mimeType = '{FOLDER_MIME}' "
-            f"or mimeType = '{GOOGLE_DOC_MIME}')"
+            f"or mimeType = '{GOOGLE_DOC_MIME}' "
+            f"or mimeType = '{SHORTCUT_MIME}')"
         )
         page_token = None
+        count = 0
+
+        def enqueue_folder(sub_id: str, name: str):
+            if sub_id not in visited:
+                visited.add(sub_id)
+                queue.append((sub_id, f"{prefix}{name}/"))
+
         while True:
             response = (
                 drive.files()
                 .list(
                     q=query,
-                    fields="nextPageToken, files(id, name, mimeType, size)",
+                    fields="nextPageToken, files(id, name, mimeType, size, "
+                           "shortcutDetails)",
                     orderBy="name",
                     pageSize=100,
                     pageToken=page_token,
@@ -377,10 +394,32 @@ def scan_drive_folder(drive, folder_id: str) -> tuple[list[dict], set]:
                 .execute()
             )
             for f in response.get("files", []):
-                if f["mimeType"] == FOLDER_MIME:
-                    queue.append((f["id"], f"{prefix}{f['name']}/"))
-                elif f["mimeType"] == GOOGLE_DOC_MIME:
+                count += 1
+                mime = f["mimeType"]
+                if debug:
+                    print(f"  [debug] {prefix or './'} : {f['name']} "
+                          f"({mime})")
+                if mime == FOLDER_MIME:
+                    enqueue_folder(f["id"], f["name"])
+                elif mime == GOOGLE_DOC_MIME:
                     existing_docs.add((current_id, f["name"]))
+                elif mime == SHORTCUT_MIME:
+                    details = f.get("shortcutDetails") or {}
+                    target_id = details.get("targetId")
+                    target_mime = details.get("targetMimeType", "")
+                    if not target_id:
+                        continue
+                    if target_mime == FOLDER_MIME:
+                        enqueue_folder(target_id, f["name"])
+                    elif target_mime.startswith(("audio/", "video/")):
+                        files.append({
+                            "id": target_id,
+                            "name": f["name"],
+                            "mimeType": target_mime,
+                            "size": 0,
+                            "parentId": current_id,
+                            "relpath": prefix + f["name"],
+                        })
                 else:
                     f["parentId"] = current_id
                     f["relpath"] = prefix + f["name"]
@@ -388,6 +427,9 @@ def scan_drive_folder(drive, folder_id: str) -> tuple[list[dict], set]:
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
+        if debug:
+            print(f"  [debug] {prefix or './'} → {count} élément(s), "
+                  f"{len(queue)} dossier(s) en attente")
     files.sort(key=lambda f: f["relpath"])
     return files, existing_docs
 
@@ -546,7 +588,7 @@ def run_drive(args) -> int:
     folder_id = extract_folder_id(args.source)
     files, existing_docs = session.call(
         "listing du dossier",
-        lambda d: scan_drive_folder(d, folder_id))
+        lambda d: scan_drive_folder(d, folder_id, debug=args.debug))
     if not files:
         print("Aucun fichier audio/vidéo dans ce dossier "
               "(sous-dossiers compris).")
@@ -666,6 +708,9 @@ def main() -> int:
     parser.add_argument("--check", action="store_true",
                         help="vérifier l'installation (dépendances, GPU, "
                              "modèle, accès Google) et quitter")
+    parser.add_argument("--debug", action="store_true",
+                        help="afficher le détail du parcours Drive "
+                             "(chaque élément trouvé et son type)")
     parser.add_argument("--language", default=None, metavar="LANG",
                         help="langue de l'audio (fr, en, ...) ; "
                              "auto-détection par défaut")

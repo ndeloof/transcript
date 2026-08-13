@@ -29,6 +29,11 @@ import tempfile
 import time
 from pathlib import Path
 
+# Xet télécharge via un cache intermédiaire, ce qui rend la progression
+# invisible (et ses barres tqdm ne s'affichent pas de façon fiable) ;
+# le mode HTTP classique écrit directement dans le cache du modèle.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 CONFIG_DIR = Path.home() / ".transcribe"
 CREDENTIALS_FILE = CONFIG_DIR / "credentials.json"
 TOKEN_FILE = CONFIG_DIR / "token.json"
@@ -67,8 +72,8 @@ def setup_windows_cuda_dlls():
             os.add_dll_directory(str(bin_dir))
 
 
-def model_is_cached(model_name: str) -> bool:
-    """Vérifie si le modèle Whisper est déjà dans le cache Hugging Face."""
+def model_cache_info(model_name: str) -> tuple[str, Path]:
+    """Retourne (repo Hugging Face, répertoire de cache) du modèle."""
     try:
         from faster_whisper.utils import _MODELS
         repo = _MODELS.get(model_name)
@@ -78,8 +83,73 @@ def model_is_cached(model_name: str) -> bool:
     hf_home = Path(os.environ.get("HF_HOME",
                                   Path.home() / ".cache" / "huggingface"))
     cache = Path(os.environ.get("HUGGINGFACE_HUB_CACHE", hf_home / "hub"))
-    snapshots = cache / ("models--" + repo.replace("/", "--")) / "snapshots"
+    return repo, cache / ("models--" + repo.replace("/", "--"))
+
+
+def model_is_cached(model_name: str) -> bool:
+    """Vérifie si le modèle Whisper est déjà dans le cache Hugging Face."""
+    snapshots = model_cache_info(model_name)[1] / "snapshots"
     return snapshots.is_dir() and any(snapshots.iterdir())
+
+
+def ensure_model_downloaded(model_name: str):
+    """Télécharge le modèle si absent, avec notre propre progression.
+
+    Les barres tqdm de huggingface_hub ne s'affichent pas de façon fiable ;
+    on suit à la place la taille du répertoire de cache pendant le
+    téléchargement, rapportée à la taille totale annoncée par l'API HF.
+    """
+    if model_is_cached(model_name):
+        return
+    import threading
+
+    from faster_whisper import download_model
+    from huggingface_hub.utils import disable_progress_bars
+
+    repo, cache_dir = model_cache_info(model_name)
+    total = None
+    try:
+        from huggingface_hub import HfApi
+        info = HfApi().model_info(repo, files_metadata=True)
+        total = sum(s.size or 0 for s in info.siblings) or None
+    except Exception:
+        pass
+
+    def cache_size() -> int:
+        try:
+            return sum(f.stat().st_size for f in cache_dir.rglob("*")
+                       if f.is_file() and not f.is_symlink())
+        except OSError:
+            return 0
+
+    stop = threading.Event()
+
+    def human(size: int) -> str:
+        return (f"{size / 1e9:.1f} Go" if size >= 1e9
+                else f"{size / 1e6:.0f} Mo")
+
+    def watch():
+        while not stop.wait(1.0):
+            size = cache_size()
+            if total:
+                size = min(size, total)
+                print(f"\r  téléchargement du modèle {model_name} "
+                      f"{int(size / total * 100):3d}% "
+                      f"({human(size)}/{human(total)})",
+                      end="", flush=True)
+            else:
+                print(f"\r  téléchargement du modèle {model_name}… "
+                      f"{human(size)}", end="", flush=True)
+
+    disable_progress_bars()
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        download_model(model_name)
+    finally:
+        stop.set()
+        watcher.join()
+        print()
 
 
 def preflight(model_name: str, need_drive: bool) -> bool:
@@ -284,9 +354,8 @@ def load_model(model_name: str):
     import ctranslate2
     from faster_whisper import WhisperModel
 
-    print(f"Chargement du modèle {model_name}… "
-          "(au premier lancement : téléchargement depuis Hugging Face)",
-          flush=True)
+    ensure_model_downloaded(model_name)
+    print(f"Chargement du modèle {model_name}…", flush=True)
     attempts = []
     if ctranslate2.get_cuda_device_count() > 0:
         attempts += [("cuda", "float16"), ("cuda", "int8_float16")]

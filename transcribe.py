@@ -87,9 +87,17 @@ def model_cache_info(model_name: str) -> tuple[str, Path]:
 
 
 def model_is_cached(model_name: str) -> bool:
-    """Vérifie si le modèle Whisper est déjà dans le cache Hugging Face."""
+    """Vérifie si le modèle Whisper est déjà COMPLET dans le cache HF.
+
+    Ne pas se fier au simple contenu du répertoire : un téléchargement
+    interrompu y laisse déjà les petits fichiers (config, tokenizer).
+    model.bin — les poids, l'essentiel du volume — doit être présent et
+    résolu (un lien vers un blob incomplet ne compte pas).
+    """
     snapshots = model_cache_info(model_name)[1] / "snapshots"
-    return snapshots.is_dir() and any(snapshots.iterdir())
+    if not snapshots.is_dir():
+        return False
+    return any((snap / "model.bin").exists() for snap in snapshots.iterdir())
 
 
 def ensure_model_downloaded(model_name: str):
@@ -364,9 +372,11 @@ def load_model(model_name: str):
     last_error = None
     for device, compute_type in attempts:
         try:
+            start = time.monotonic()
             model = WhisperModel(model_name, device=device,
                                  compute_type=compute_type)
-            print(f"Modèle {model_name} chargé sur {device} ({compute_type})")
+            print(f"Modèle {model_name} chargé sur {device} ({compute_type}) "
+                  f"en {time.monotonic() - start:.0f}s")
             return model
         except Exception as exc:  # OOM GPU, DLL manquante, etc.
             print(f"  échec sur {device}/{compute_type}: {exc}",
@@ -570,11 +580,52 @@ def main() -> int:
     if args.language and args.language.lower() == "auto":
         args.language = None
 
-    if args.check:
-        return 0 if preflight(args.model, need_drive=True) else 1
-    if not args.source:
+    if not args.check and not args.source:
         parser.error("préciser une source (dossier Drive ou chemin local), "
                      "ou --check pour vérifier l'installation")
+
+    # Le pipeline tourne dans un thread démon : le thread principal ne fait
+    # qu'attendre par petites tranches, et reste donc capable de traiter
+    # Ctrl+C immédiatement, même pendant les longs appels natifs
+    # (téléchargement Hugging Face, chargement/inférence ctranslate2) qui
+    # bloqueraient sinon la livraison de KeyboardInterrupt.
+    import threading
+
+    outcome = {}
+
+    def work():
+        try:
+            outcome["code"] = run(args)
+        except SystemExit as exc:
+            if isinstance(exc.code, int):
+                outcome["code"] = exc.code
+            else:
+                if exc.code is not None:
+                    print(exc.code, file=sys.stderr)
+                outcome["code"] = 1
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            outcome["code"] = 1
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    try:
+        while worker.is_alive():
+            worker.join(0.2)
+    except KeyboardInterrupt:
+        print("\nInterrompu (Ctrl+C).", file=sys.stderr)
+        sys.stderr.flush()
+        sys.stdout.flush()
+        # sortie immédiate : les threads natifs (HF, ctranslate2) ne peuvent
+        # pas être arrêtés proprement
+        os._exit(130)
+    return outcome.get("code", 1)
+
+
+def run(args) -> int:
+    if args.check:
+        return 0 if preflight(args.model, need_drive=True) else 1
 
     local = Path(args.source).expanduser()
     is_local = local.exists()

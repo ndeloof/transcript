@@ -286,6 +286,49 @@ def get_drive_service():
     return build("drive", "v3", credentials=creds)
 
 
+class DriveSession:
+    """Appels Drive avec reprises sur connexion neuve.
+
+    Google ferme les connexions restées inactives pendant une longue
+    transcription : l'appel suivant échoue alors sur le socket mort
+    (ConnectionResetError / WinError 10054). Chaque appel est rejoué avec
+    backoff, en reconstruisant le client entre deux tentatives.
+    """
+
+    ATTEMPTS = 4
+
+    def __init__(self):
+        self._service = None
+
+    @property
+    def service(self):
+        if self._service is None:
+            self._service = get_drive_service()
+        return self._service
+
+    def call(self, label: str, fn):
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        for attempt in range(1, self.ATTEMPTS + 1):
+            try:
+                return fn(self.service)
+            except Exception as exc:
+                retryable = (
+                    isinstance(exc, (OSError, httplib2.HttpLib2Error))
+                    or (isinstance(exc, HttpError)
+                        and exc.resp.status in (429, 500, 502, 503, 504))
+                )
+                if not retryable or attempt == self.ATTEMPTS:
+                    raise
+                delay = 2 ** (attempt - 1)
+                print(f"\n  {label} : {exc} → nouvelle tentative "
+                      f"{attempt}/{self.ATTEMPTS - 1} dans {delay}s…",
+                      file=sys.stderr)
+                time.sleep(delay)
+                self._service = None  # connexion neuve
+
+
 def extract_folder_id(arg: str) -> str:
     """Accepte l'URL complète d'un dossier Drive ou son ID nu."""
     match = re.search(r"/folders/([A-Za-z0-9_-]+)", arg)
@@ -352,7 +395,7 @@ def download_file(drive, file: dict, dest_dir: Path) -> Path:
         downloader = MediaIoBaseDownload(fh, request, chunksize=16 * 1024 * 1024)
         done = False
         while not done:
-            status, done = downloader.next_chunk()
+            status, done = downloader.next_chunk(num_retries=3)
             if status:
                 done_mb = status.resumable_progress / 1e6
                 elapsed = time.monotonic() - start
@@ -490,9 +533,10 @@ def transcribe_file(model, path: Path, language: str | None,
 
 
 def run_drive(args) -> int:
-    drive = get_drive_service()
+    session = DriveSession()
     folder_id = extract_folder_id(args.source)
-    files = list_media_files(drive, folder_id)
+    files = session.call("listing du dossier",
+                         lambda d: list_media_files(d, folder_id))
     if not files:
         print("Aucun fichier audio/vidéo dans ce dossier.")
         return 0
@@ -510,7 +554,9 @@ def run_drive(args) -> int:
                     print("  déjà transcrit (fichier .txt existant), ignoré")
                     skipped.append(file["name"])
                     continue
-            elif not args.force and find_existing_doc(drive, folder_id, base_name):
+            elif not args.force and session.call(
+                    "recherche du Doc existant",
+                    lambda d: find_existing_doc(d, folder_id, base_name)):
                 print("  déjà transcrit (Google Doc existant), ignoré")
                 skipped.append(file["name"])
                 continue
@@ -519,7 +565,9 @@ def run_drive(args) -> int:
                 model = load_model(args.model)
 
             with tempfile.TemporaryDirectory(prefix="transcribe-") as tmp:
-                local = download_file(drive, file, Path(tmp))
+                local = session.call(
+                    "téléchargement",
+                    lambda d: download_file(d, file, Path(tmp)))
                 text = transcribe_file(model, local, args.language,
                                        args.timestamps)
 
@@ -528,7 +576,9 @@ def run_drive(args) -> int:
                 out_path.write_text(text, encoding="utf-8")
                 print(f"  écrit: {out_path}")
             else:
-                link = create_google_doc(drive, folder_id, base_name, text)
+                link = session.call(
+                    "création du Doc",
+                    lambda d: create_google_doc(d, folder_id, base_name, text))
                 print(f"  Google Doc créé: {link}")
             done.append(file["name"])
         except Exception as exc:

@@ -160,15 +160,22 @@ def find_existing_doc(drive, folder_id: str, doc_name: str) -> bool:
 def download_file(drive, file: dict, dest_dir: Path) -> Path:
     from googleapiclient.http import MediaIoBaseDownload
 
+    size_mb = int(file.get("size", 0)) / 1e6
+    print(f"  téléchargement de {size_mb:.0f} Mo…", end="", flush=True)
     dest = dest_dir / file["name"]
     request = drive.files().get_media(fileId=file["id"], supportsAllDrives=True)
+    start = time.monotonic()
     with open(dest, "wb") as fh:
         downloader = MediaIoBaseDownload(fh, request, chunksize=16 * 1024 * 1024)
         done = False
         while not done:
             status, done = downloader.next_chunk()
             if status:
-                print(f"\r  téléchargement {int(status.progress() * 100):3d}%",
+                done_mb = status.resumable_progress / 1e6
+                elapsed = time.monotonic() - start
+                speed = done_mb / elapsed if elapsed > 0 else 0
+                print(f"\r  téléchargement {int(status.progress() * 100):3d}% "
+                      f"({done_mb:.0f}/{size_mb:.0f} Mo, {speed:.1f} Mo/s)",
                       end="", flush=True)
     print()
     return dest
@@ -207,6 +214,9 @@ def load_model(model_name: str):
     import ctranslate2
     from faster_whisper import WhisperModel
 
+    print(f"Chargement du modèle {model_name}… "
+          "(au premier lancement : téléchargement depuis Hugging Face)",
+          flush=True)
     attempts = []
     if ctranslate2.get_cuda_device_count() > 0:
         attempts += [("cuda", "float16"), ("cuda", "int8_float16")]
@@ -235,11 +245,17 @@ def format_timestamp(seconds: float) -> str:
 
 def transcribe_file(model, path: Path, language: str | None,
                     timestamps: bool) -> str:
+    # transcribe() décode toute la piste audio et exécute le VAD avant de
+    # produire le premier segment — long pour une vidéo, d'où le message.
+    print("  extraction de l'audio et détection de la parole (VAD)…",
+          end="", flush=True)
+    prep_start = time.monotonic()
     segments, info = model.transcribe(
         str(path),
         language=language,
         vad_filter=True,
     )
+    print(f" {time.monotonic() - prep_start:.0f}s")
     duration = info.duration or 0
     print(f"  durée {format_timestamp(duration)}, "
           f"langue détectée: {info.language} "

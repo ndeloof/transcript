@@ -100,6 +100,21 @@ def model_is_cached(model_name: str) -> bool:
     return any((snap / "model.bin").exists() for snap in snapshots.iterdir())
 
 
+def model_blobs_size(model_name: str) -> int:
+    """Octets déjà téléchargés (blobs/ uniquement : sous Windows, sans liens
+    symboliques, les fichiers sont dupliqués dans snapshots/, ce qui
+    fausserait la mesure)."""
+    cache_dir = model_cache_info(model_name)[1]
+    target = cache_dir / "blobs"
+    if not target.is_dir():
+        target = cache_dir
+    try:
+        return sum(f.stat().st_size for f in target.rglob("*")
+                   if f.is_file() and not f.is_symlink())
+    except OSError:
+        return 0
+
+
 def ensure_model_downloaded(model_name: str):
     """Télécharge le modèle si absent, avec notre propre progression.
 
@@ -114,7 +129,7 @@ def ensure_model_downloaded(model_name: str):
     from faster_whisper import download_model
     from huggingface_hub.utils import disable_progress_bars
 
-    repo, cache_dir = model_cache_info(model_name)
+    repo = model_cache_info(model_name)[0]
     total = None
     try:
         from huggingface_hub import HfApi
@@ -124,17 +139,7 @@ def ensure_model_downloaded(model_name: str):
         pass
 
     def cache_size() -> int:
-        # ne mesurer que blobs/ : sous Windows (pas de liens symboliques),
-        # chaque fichier est dupliqué dans snapshots/, ce qui ferait
-        # afficher 100% à la moitié du téléchargement réel
-        target = cache_dir / "blobs"
-        if not target.is_dir():
-            target = cache_dir
-        try:
-            return sum(f.stat().st_size for f in target.rglob("*")
-                       if f.is_file() and not f.is_symlink())
-        except OSError:
-            return 0
+        return model_blobs_size(model_name)
 
     stop = threading.Event()
 
@@ -145,6 +150,7 @@ def ensure_model_downloaded(model_name: str):
     def watch():
         last_size = 0
         last_time = time.monotonic()
+        final_start = None
         while not stop.wait(1.0):
             size = cache_size()
             now = time.monotonic()
@@ -152,9 +158,13 @@ def ensure_model_downloaded(model_name: str):
             last_size, last_time = size, now
             if total and size >= total:
                 # tout est téléchargé, la bibliothèque finalise (copie des
-                # fichiers dans snapshots/ sous Windows)
+                # fichiers dans snapshots/ sous Windows — ~3 Go, peut
+                # prendre une minute sur un disque lent)
+                if final_start is None:
+                    final_start = now
                 print(f"\r  téléchargement du modèle {model_name} 100% "
-                      f"({human(total)}) — finalisation…    ",
+                      f"({human(total)}) — finalisation… "
+                      f"{int(now - final_start)}s ",
                       end="", flush=True)
             elif total:
                 print(f"\r  téléchargement du modèle {model_name} "
@@ -214,8 +224,15 @@ def preflight(model_name: str, need_drive: bool) -> bool:
     if model_is_cached(model_name):
         check("ok", f"modèle {model_name} présent dans le cache")
     else:
-        check("info", f"modèle {model_name} absent du cache → "
-                      "téléchargé au premier lancement (~3 Go pour large-v3)")
+        partial = model_blobs_size(model_name)
+        if partial > 1e6:
+            check("info", f"modèle {model_name} : cache incomplet "
+                          f"({partial / 1e9:.1f} Go déjà téléchargés) → "
+                          "complété au lancement")
+        else:
+            check("info", f"modèle {model_name} absent du cache → "
+                          "téléchargé au premier lancement "
+                          "(~3 Go pour large-v3)")
 
     if need_drive:
         if CREDENTIALS_FILE.exists():

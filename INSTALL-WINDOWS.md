@@ -130,3 +130,11 @@ Les lancements suivants démarrent directement.
   dans PowerShell et l'ouvrir manuellement.
 - **Ré-autorisation demandée après 7 jours** : l'app OAuth Google est en mode
   « Testing » — la passer « In production » (voir README).
+- **Purger le modèle du cache** (pour forcer un re-téléchargement propre,
+  par exemple après un téléchargement corrompu) :
+
+  ```powershell
+  Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\huggingface\hub\models--Systran--faster-whisper-large-v3"
+  ```
+
+  (sur macOS : `rm -rf ~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3`)

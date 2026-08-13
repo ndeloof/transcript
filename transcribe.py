@@ -124,8 +124,14 @@ def ensure_model_downloaded(model_name: str):
         pass
 
     def cache_size() -> int:
+        # ne mesurer que blobs/ : sous Windows (pas de liens symboliques),
+        # chaque fichier est dupliqué dans snapshots/, ce qui ferait
+        # afficher 100% à la moitié du téléchargement réel
+        target = cache_dir / "blobs"
+        if not target.is_dir():
+            target = cache_dir
         try:
-            return sum(f.stat().st_size for f in cache_dir.rglob("*")
+            return sum(f.stat().st_size for f in target.rglob("*")
                        if f.is_file() and not f.is_symlink())
         except OSError:
             return 0
@@ -137,17 +143,29 @@ def ensure_model_downloaded(model_name: str):
                 else f"{size / 1e6:.0f} Mo")
 
     def watch():
+        last_size = 0
+        last_time = time.monotonic()
         while not stop.wait(1.0):
             size = cache_size()
-            if total:
-                size = min(size, total)
+            now = time.monotonic()
+            speed = max(0.0, size - last_size) / max(now - last_time, 1e-6)
+            last_size, last_time = size, now
+            if total and size >= total:
+                # tout est téléchargé, la bibliothèque finalise (copie des
+                # fichiers dans snapshots/ sous Windows)
+                print(f"\r  téléchargement du modèle {model_name} 100% "
+                      f"({human(total)}) — finalisation…    ",
+                      end="", flush=True)
+            elif total:
                 print(f"\r  téléchargement du modèle {model_name} "
                       f"{int(size / total * 100):3d}% "
-                      f"({human(size)}/{human(total)})",
+                      f"({human(size)}/{human(total)}, "
+                      f"{speed / 1e6:.1f} Mo/s)",
                       end="", flush=True)
             else:
                 print(f"\r  téléchargement du modèle {model_name}… "
-                      f"{human(size)}", end="", flush=True)
+                      f"{human(size)} ({speed / 1e6:.1f} Mo/s)",
+                      end="", flush=True)
 
     disable_progress_bars()
     watcher = threading.Thread(target=watch, daemon=True)

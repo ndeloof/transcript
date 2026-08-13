@@ -84,5 +84,12 @@ Au premier lancement : le navigateur s'ouvre pour autoriser l'accès Drive
 (jeton mis en cache dans `~/.transcribe/token.json`), et le modèle large-v3
 (~3 Go) est téléchargé depuis Hugging Face (mis en cache ensuite).
 
+> Un avertissement « unauthenticated requests to the HF Hub » peut
+> s'afficher : il est sans conséquence (modèles publics). Pour de
+> meilleures limites de débit lors du premier téléchargement, créer un
+> token **Read** sur <https://huggingface.co/settings/tokens> et le
+> définir dans la variable d'environnement `HF_TOKEN`
+> (PowerShell : `setx HF_TOKEN "hf_xxxx"` ; macOS : `export HF_TOKEN=...`).
+
 Les fichiers déjà transcrits (un Google Doc du même nom existe dans le
 dossier) sont ignorés — `--force` pour retranscrire.

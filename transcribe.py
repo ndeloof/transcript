@@ -337,50 +337,59 @@ def extract_folder_id(arg: str) -> str:
     return arg.split("?")[0]
 
 
-def drive_quote(name: str) -> str:
-    return name.replace("\\", "\\\\").replace("'", "\\'")
+FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
-def list_media_files(drive, folder_id: str) -> list[dict]:
-    query = (
-        f"'{folder_id}' in parents and trashed = false and "
-        "(mimeType contains 'audio/' or mimeType contains 'video/')"
-    )
+def scan_drive_folder(drive, folder_id: str) -> tuple[list[dict], set]:
+    """Parcourt le dossier ET ses sous-dossiers.
+
+    Retourne (fichiers audio/vidéo, Docs existants). Chaque fichier porte
+    en plus `parentId` (le sous-dossier qui le contient, où créer le Doc)
+    et `relpath` (chemin relatif affiché). Les Docs existants — collectés
+    pendant le même parcours, sans appels supplémentaires — forment un
+    ensemble de couples (parentId, nom) utilisé pour ignorer les fichiers
+    déjà transcrits.
+    """
     files = []
-    page_token = None
-    while True:
-        response = (
-            drive.files()
-            .list(
-                q=query,
-                fields="nextPageToken, files(id, name, mimeType, size)",
-                orderBy="name",
-                pageSize=100,
-                pageToken=page_token,
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
-            )
-            .execute()
+    existing_docs = set()
+    queue = [(folder_id, "")]
+    while queue:
+        current_id, prefix = queue.pop(0)
+        query = (
+            f"'{current_id}' in parents and trashed = false and "
+            "(mimeType contains 'audio/' or mimeType contains 'video/' "
+            f"or mimeType = '{FOLDER_MIME}' "
+            f"or mimeType = '{GOOGLE_DOC_MIME}')"
         )
-        files.extend(response.get("files", []))
-        page_token = response.get("nextPageToken")
-        if not page_token:
-            break
-    return files
-
-
-def find_existing_doc(drive, folder_id: str, doc_name: str) -> bool:
-    query = (
-        f"'{folder_id}' in parents and trashed = false and "
-        f"mimeType = '{GOOGLE_DOC_MIME}' and name = '{drive_quote(doc_name)}'"
-    )
-    response = (
-        drive.files()
-        .list(q=query, fields="files(id)", pageSize=1,
-              supportsAllDrives=True, includeItemsFromAllDrives=True)
-        .execute()
-    )
-    return bool(response.get("files"))
+        page_token = None
+        while True:
+            response = (
+                drive.files()
+                .list(
+                    q=query,
+                    fields="nextPageToken, files(id, name, mimeType, size)",
+                    orderBy="name",
+                    pageSize=100,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+                .execute()
+            )
+            for f in response.get("files", []):
+                if f["mimeType"] == FOLDER_MIME:
+                    queue.append((f["id"], f"{prefix}{f['name']}/"))
+                elif f["mimeType"] == GOOGLE_DOC_MIME:
+                    existing_docs.add((current_id, f["name"]))
+                else:
+                    f["parentId"] = current_id
+                    f["relpath"] = prefix + f["name"]
+                    files.append(f)
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+    files.sort(key=lambda f: f["relpath"])
+    return files, existing_docs
 
 
 def download_file(drive, file: dict, dest_dir: Path) -> Path:
@@ -535,30 +544,33 @@ def transcribe_file(model, path: Path, language: str | None,
 def run_drive(args) -> int:
     session = DriveSession()
     folder_id = extract_folder_id(args.source)
-    files = session.call("listing du dossier",
-                         lambda d: list_media_files(d, folder_id))
+    files, existing_docs = session.call(
+        "listing du dossier",
+        lambda d: scan_drive_folder(d, folder_id))
     if not files:
-        print("Aucun fichier audio/vidéo dans ce dossier.")
+        print("Aucun fichier audio/vidéo dans ce dossier "
+              "(sous-dossiers compris).")
         return 0
-    print(f"{len(files)} fichier(s) audio/vidéo trouvé(s).")
+    print(f"{len(files)} fichier(s) audio/vidéo trouvé(s) "
+          "(sous-dossiers compris).")
 
     model = None
     done, skipped, failed = [], [], []
     for file in files:
         base_name = Path(file["name"]).stem
-        print(f"\n=== {file['name']} ===")
+        print(f"\n=== {file['relpath']} ===")
         try:
             if args.txt:
-                out_path = Path(args.txt) / f"{base_name}.txt"
+                out_path = (Path(args.txt)
+                            / Path(file["relpath"]).with_suffix(".txt"))
                 if out_path.exists() and not args.force:
                     print("  déjà transcrit (fichier .txt existant), ignoré")
-                    skipped.append(file["name"])
+                    skipped.append(file["relpath"])
                     continue
-            elif not args.force and session.call(
-                    "recherche du Doc existant",
-                    lambda d: find_existing_doc(d, folder_id, base_name)):
+            elif (not args.force
+                  and (file["parentId"], base_name) in existing_docs):
                 print("  déjà transcrit (Google Doc existant), ignoré")
-                skipped.append(file["name"])
+                skipped.append(file["relpath"])
                 continue
 
             if model is None:
@@ -578,12 +590,13 @@ def run_drive(args) -> int:
             else:
                 link = session.call(
                     "création du Doc",
-                    lambda d: create_google_doc(d, folder_id, base_name, text))
+                    lambda d: create_google_doc(d, file["parentId"],
+                                                base_name, text))
                 print(f"  Google Doc créé: {link}")
-            done.append(file["name"])
+            done.append(file["relpath"])
         except Exception as exc:
             print(f"  ERREUR: {exc}", file=sys.stderr)
-            failed.append(file["name"])
+            failed.append(file["relpath"])
 
     print(f"\nTerminé: {len(done)} transcrit(s), {len(skipped)} ignoré(s), "
           f"{len(failed)} en erreur.")
@@ -595,26 +608,32 @@ def run_drive(args) -> int:
 def run_local(args, source: Path) -> int:
     if source.is_dir():
         files = sorted(
-            p for p in source.iterdir()
-            if p.suffix.lower() in MEDIA_EXTENSIONS
+            p for p in source.rglob("*")
+            if p.is_file() and p.suffix.lower() in MEDIA_EXTENSIONS
         )
     else:
         files = [source]
     if not files:
-        print("Aucun fichier audio/vidéo dans ce dossier.")
+        print("Aucun fichier audio/vidéo dans ce dossier "
+              "(sous-dossiers compris).")
         return 0
-    print(f"{len(files)} fichier(s) audio/vidéo trouvé(s).")
+    print(f"{len(files)} fichier(s) audio/vidéo trouvé(s) "
+          "(sous-dossiers compris).")
 
     out_dir = Path(args.txt) if args.txt else None
     model = None
     done, skipped, failed = [], [], []
     for path in files:
-        out_path = (out_dir or path.parent) / f"{path.stem}.txt"
-        print(f"\n=== {path.name} ===")
+        rel = (path.relative_to(source) if source.is_dir()
+               else Path(path.name))
+        # avec --txt, l'arborescence des sous-dossiers est reproduite
+        out_path = (out_dir / rel.with_suffix(".txt") if out_dir
+                    else path.with_suffix(".txt"))
+        print(f"\n=== {rel} ===")
         try:
             if out_path.exists() and not args.force:
                 print("  déjà transcrit (fichier .txt existant), ignoré")
-                skipped.append(path.name)
+                skipped.append(str(rel))
                 continue
             if model is None:
                 model = load_model(args.model)
@@ -622,10 +641,10 @@ def run_local(args, source: Path) -> int:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(text, encoding="utf-8")
             print(f"  écrit: {out_path}")
-            done.append(path.name)
+            done.append(str(rel))
         except Exception as exc:
             print(f"  ERREUR: {exc}", file=sys.stderr)
-            failed.append(path.name)
+            failed.append(str(rel))
 
     print(f"\nTerminé: {len(done)} transcrit(s), {len(skipped)} ignoré(s), "
           f"{len(failed)} en erreur.")

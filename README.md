@@ -59,7 +59,8 @@ pipeline avec `--model tiny`.
 ## Usage
 
 ```bash
-# Tous les fichiers audio/vidéo d'un dossier Drive → un Google Doc chacun
+# Tous les fichiers audio/vidéo d'un dossier Drive (sous-dossiers compris)
+# → un Google Doc chacun, créé à côté de son fichier source
 uv run transcribe.py "https://drive.google.com/drive/folders/<ID>"
 
 # Forcer la langue, ajouter des timestamps [h:mm:ss] par paragraphe
@@ -91,5 +92,8 @@ Au premier lancement : le navigateur s'ouvre pour autoriser l'accès Drive
 > définir dans la variable d'environnement `HF_TOKEN`
 > (PowerShell : `setx HF_TOKEN "hf_xxxx"` ; macOS : `export HF_TOKEN=...`).
 
-Les fichiers déjà transcrits (un Google Doc du même nom existe dans le
-dossier) sont ignorés — `--force` pour retranscrire.
+Les sous-dossiers sont parcourus récursivement ; chaque Google Doc est créé
+dans le sous-dossier de son fichier source (avec `--txt`, l'arborescence est
+reproduite). Les fichiers déjà transcrits (un Google Doc du même nom existe
+dans le même sous-dossier) sont ignorés et passés sans re-traitement —
+`--force` pour retranscrire.

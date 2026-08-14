@@ -119,6 +119,10 @@ et un glossaire de termes du domaine :
   déjà produits et les met à jour en place (même lien). Seuls les Docs
   correspondant à un fichier audio/vidéo du même sous-dossier sont traités.
 
+Les transcripts déjà corrigés sont marqués (métadonnée `appProperties` sur
+le Doc Drive, fichier `.transcribe-state.json` en local) : relancer `--fix`
+les ignore — `--force` pour recorriger malgré tout.
+
 Pré-requis : **Claude Code** installé et connecté (une souscription
 Claude Pro/Max suffit, pas besoin de clé API) — la correction appelle
 `claude -p` en mode headless. Installation : <https://claude.ai/download>,

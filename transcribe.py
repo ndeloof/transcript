@@ -49,6 +49,8 @@ TOKEN_FILE = CONFIG_DIR / "token.json"
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
+# Métadonnée Drive (appProperties) marquant un Doc déjà corrigé par Claude
+CORRECTED_PROP = "transcribeCorrected"
 
 # Extensions reconnues en mode local (source = fichier/dossier sur disque)
 MEDIA_EXTENSIONS = {
@@ -554,7 +556,7 @@ def scan_drive_folder(drive, folder_id: str,
                 .list(
                     q=query,
                     fields="nextPageToken, files(id, name, mimeType, size, "
-                           "shortcutDetails)",
+                           "shortcutDetails, appProperties)",
                     orderBy="name",
                     pageSize=100,
                     pageToken=page_token,
@@ -572,7 +574,11 @@ def scan_drive_folder(drive, folder_id: str,
                 if mime == FOLDER_MIME:
                     enqueue_folder(f["id"], f["name"])
                 elif mime == GOOGLE_DOC_MIME:
-                    existing_docs[(current_id, f["name"])] = f["id"]
+                    existing_docs[(current_id, f["name"])] = {
+                        "id": f["id"],
+                        "corrected": (f.get("appProperties") or {})
+                        .get(CORRECTED_PROP) == "1",
+                    }
                 elif mime == SHORTCUT_MIME:
                     details = f.get("shortcutDetails") or {}
                     target_id = details.get("targetId")
@@ -628,7 +634,8 @@ def download_file(drive, file: dict, dest_dir: Path) -> Path:
     return dest
 
 
-def create_google_doc(drive, folder_id: str, doc_name: str, text: str) -> str:
+def create_google_doc(drive, folder_id: str, doc_name: str, text: str,
+                      corrected: bool = False) -> str:
     from googleapiclient.http import MediaIoBaseUpload
 
     media = MediaIoBaseUpload(
@@ -641,6 +648,8 @@ def create_google_doc(drive, folder_id: str, doc_name: str, text: str) -> str:
         "mimeType": GOOGLE_DOC_MIME,
         "parents": [folder_id],
     }
+    if corrected:
+        metadata["appProperties"] = {CORRECTED_PROP: "1"}
     doc = (
         drive.files()
         .create(body=metadata, media_body=media, fields="id, webViewLink",
@@ -661,7 +670,8 @@ def export_google_doc(drive, doc_id: str) -> str:
 
 
 def update_google_doc(drive, doc_id: str, text: str):
-    """Remplace le contenu d'un Google Doc (même id, même lien)."""
+    """Remplace le contenu d'un Google Doc (même id, même lien) et le
+    marque comme corrigé (appProperties)."""
     from googleapiclient.http import MediaIoBaseUpload
 
     media = MediaIoBaseUpload(
@@ -671,7 +681,9 @@ def update_google_doc(drive, doc_id: str, text: str):
     )
     (
         drive.files()
-        .update(fileId=doc_id, media_body=media, supportsAllDrives=True)
+        .update(fileId=doc_id, media_body=media,
+                body={"appProperties": {CORRECTED_PROP: "1"}},
+                supportsAllDrives=True)
         .execute()
     )
 
@@ -831,7 +843,8 @@ def run_drive(args) -> int:
                 link = session.call(
                     "création du Doc",
                     lambda d: create_google_doc(d, file["parentId"],
-                                                base_name, text))
+                                                base_name, text,
+                                                corrected=args.correct))
                 print(f"  Google Doc créé: {link}")
             done.append(file["relpath"])
         except Exception as exc:
@@ -882,6 +895,11 @@ def run_local(args, source: Path) -> int:
                 text = correct_text(text, args.claude_model)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(text, encoding="utf-8")
+            if args.correct:
+                # marque le .txt comme déjà corrigé pour un futur --fix
+                root = out_dir or (source if source.is_dir() else path.parent)
+                mark_corrected(root, str(out_path.relative_to(root)),
+                               load_corrected_state(root))
             print(f"  écrit: {out_path}")
             done.append(str(rel))
         except Exception as exc:
@@ -906,11 +924,19 @@ def run_fix_drive(args) -> int:
         lambda d: scan_drive_folder(d, folder_id, debug=args.debug))
 
     targets = []
+    skipped = []
     for file in files:
         base_name = Path(file["name"]).stem
-        doc_id = existing_docs.get((file["parentId"], base_name))
-        if doc_id:
-            targets.append((file["relpath"], base_name, doc_id))
+        doc = existing_docs.get((file["parentId"], base_name))
+        if not doc:
+            continue
+        if doc["corrected"] and not args.force:
+            skipped.append(file["relpath"])
+        else:
+            targets.append((file["relpath"], base_name, doc["id"]))
+    if skipped:
+        print(f"{len(skipped)} transcript(s) déjà corrigé(s), ignoré(s) "
+              "(--force pour recorriger).")
     if not targets:
         print("Aucun Google Doc de transcript à corriger dans ce dossier.")
         return 0
@@ -934,10 +960,39 @@ def run_fix_drive(args) -> int:
             print(f"  ERREUR: {exc}", file=sys.stderr)
             failed.append(relpath)
 
-    print(f"\nTerminé: {len(done)} corrigé(s), {len(failed)} en erreur.")
+    print(f"\nTerminé: {len(done)} corrigé(s), {len(skipped)} ignoré(s), "
+          f"{len(failed)} en erreur.")
     for name in failed:
         print(f"  échec: {name}", file=sys.stderr)
     return 1 if failed else 0
+
+
+def local_state_file(source: Path) -> Path:
+    root = source if source.is_dir() else source.parent
+    return root / ".transcribe-state.json"
+
+
+def load_corrected_state(source: Path) -> set:
+    import json
+
+    state_path = local_state_file(source)
+    if state_path.exists():
+        try:
+            return set(json.loads(
+                state_path.read_text(encoding="utf-8")).get("corrected", []))
+        except Exception:
+            pass
+    return set()
+
+
+def mark_corrected(source: Path, rel: str, corrected: set):
+    import json
+
+    corrected.add(rel)
+    local_state_file(source).write_text(
+        json.dumps({"corrected": sorted(corrected)},
+                   ensure_ascii=False, indent=1),
+        encoding="utf-8")
 
 
 def run_fix_local(args, source: Path) -> int:
@@ -953,23 +1008,36 @@ def run_fix_local(args, source: Path) -> int:
     if not files:
         print("Aucun fichier .txt à corriger.")
         return 0
-    print(f"{len(files)} fichier(s) .txt à corriger.")
 
-    done, failed = [], []
+    corrected_state = load_corrected_state(source)
+    done, skipped, failed = [], [], []
+    todo = []
     for path in files:
-        rel = path.relative_to(source) if source.is_dir() else path.name
+        rel = str(path.relative_to(source) if source.is_dir() else path.name)
+        if rel in corrected_state and not args.force:
+            skipped.append(rel)
+        else:
+            todo.append((path, rel))
+    if skipped:
+        print(f"{len(skipped)} fichier(s) déjà corrigé(s), ignoré(s) "
+              "(--force pour recorriger).")
+    print(f"{len(todo)} fichier(s) .txt à corriger.")
+
+    for path, rel in todo:
         print(f"\n=== {rel} ===")
         try:
             corrected = correct_text(path.read_text(encoding="utf-8"),
                                      args.claude_model)
             path.write_text(corrected, encoding="utf-8")
+            mark_corrected(source, rel, corrected_state)
             print(f"  corrigé: {path}")
-            done.append(str(rel))
+            done.append(rel)
         except Exception as exc:
             print(f"  ERREUR: {exc}", file=sys.stderr)
-            failed.append(str(rel))
+            failed.append(rel)
 
-    print(f"\nTerminé: {len(done)} corrigé(s), {len(failed)} en erreur.")
+    print(f"\nTerminé: {len(done)} corrigé(s), {len(skipped)} ignoré(s), "
+          f"{len(failed)} en erreur.")
     return 1 if failed else 0
 
 
@@ -1000,7 +1068,8 @@ def main() -> int:
     parser.add_argument("--timestamps", action="store_true",
                         help="préfixer chaque paragraphe de [h:mm:ss]")
     parser.add_argument("--force", action="store_true",
-                        help="retranscrire même si la sortie existe déjà")
+                        help="retraiter même si déjà transcrit (ou déjà "
+                             "corrigé, avec --fix)")
     parser.add_argument("--txt", metavar="DIR", default=None,
                         help="écrire des fichiers .txt dans DIR au lieu de "
                              "créer des Google Docs")

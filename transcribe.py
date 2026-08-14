@@ -34,6 +34,15 @@ from pathlib import Path
 # le mode HTTP classique écrit directement dans le cache du modèle.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
+# Windows : console et sous-processus utilisent cp1252 par défaut, qui ne
+# peut pas encoder certains caractères du script (→, ✓, œ…) — tout en UTF-8.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 CONFIG_DIR = Path.home() / ".transcribe"
 CREDENTIALS_FILE = CONFIG_DIR / "credentials.json"
 TOKEN_FILE = CONFIG_DIR / "token.json"
@@ -124,7 +133,8 @@ def claude_cli_version() -> str | None:
         return None
     try:
         result = subprocess.run(["claude", "--version"],
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, timeout=30,
+                                encoding="utf-8", errors="replace")
         return result.stdout.strip() or "installé"
     except Exception:
         return None
@@ -157,10 +167,13 @@ def correct_text(text: str, claude_model: str | None = None) -> str:
         command = ["claude", "-p", "--output-format", "text"]
         if claude_model:
             command += ["--model", claude_model]
+        # encoding explicite : sous Windows, text=True utiliserait cp1252,
+        # incapable d'encoder « → » (présent dans le prompt) ou « œ »
         result = subprocess.run(
             command,
             input=prompt_header + chunk,
-            capture_output=True, text=True, timeout=900,
+            capture_output=True, timeout=900,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             raise RuntimeError(

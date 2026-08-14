@@ -73,6 +73,20 @@ mkdir $env:USERPROFILE\.transcribe
 copy $env:USERPROFILE\Downloads\credentials.json $env:USERPROFILE\.transcribe\
 ```
 
+## 4 bis. (Optionnel) Claude Code pour la correction des transcripts
+
+Les options `--correct` et `--fix` (correction du vocabulaire anatomique et
+des homophonies via Claude) nécessitent **Claude Code**, couvert par une
+souscription Claude Pro/Max — pas besoin de clé API :
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+```
+
+Rouvrir PowerShell, lancer `claude`, puis suivre la connexion dans le
+navigateur avec le compte Claude (souscription Max). Vérifier ensuite avec
+`claude --version`.
+
 ## 5. Vérifier l'installation
 
 ```powershell

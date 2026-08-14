@@ -77,6 +77,13 @@ uv run transcribe.py <ID-dossier> --model tiny
 
 # Vérifier l'installation (dépendances, GPU, modèle, accès Google) sans rien transcrire
 uv run transcribe.py --check
+
+# Corriger le transcript via Claude (vocabulaire anatomique, homophonies)
+# avant de créer le Doc
+uv run transcribe.py <ID-dossier> --correct
+
+# Corriger les Google Docs DÉJÀ produits, sans retranscrire l'audio
+uv run transcribe.py <ID-dossier> --fix
 ```
 
 Le même bilan d'environnement s'affiche au début de chaque lancement.
@@ -97,3 +104,27 @@ dans le sous-dossier de son fichier source (avec `--txt`, l'arborescence est
 reproduite). Les fichiers déjà transcrits (un Google Doc du même nom existe
 dans le même sous-dossier) sont ignorés et passés sans re-traitement —
 `--force` pour retranscrire.
+
+## Correction Claude (`--correct` / `--fix`)
+
+Whisper transcrit phonétiquement et se trompe sur les homophonies
+(« bouillon de culture » → « brouillon de culture ») et le vocabulaire
+anatomique. La correction passe le transcript dans **Claude** avec un prompt
+contenant le contexte technique (thérapie manuelle, ostéopathie, anatomie)
+et un glossaire de termes du domaine :
+
+- `--correct` : corrige chaque transcript juste après la transcription,
+  avant de créer le Google Doc ;
+- `--fix` : **ne retranscrit rien** — corrige les Google Docs (ou .txt)
+  déjà produits et les met à jour en place (même lien). Seuls les Docs
+  correspondant à un fichier audio/vidéo du même sous-dossier sont traités.
+
+Pré-requis : **Claude Code** installé et connecté (une souscription
+Claude Pro/Max suffit, pas besoin de clé API) — la correction appelle
+`claude -p` en mode headless. Installation : <https://claude.ai/download>,
+puis lancer `claude` une fois pour se connecter.
+
+Le glossaire par défaut (termes d'anatomie et de thérapie manuelle) peut
+être complété dans `~/.transcribe/glossaire.txt` (un terme par ligne) avec
+le vocabulaire propre à la formation. `--claude-model` permet de choisir le
+modèle (défaut : celui configuré dans Claude Code).

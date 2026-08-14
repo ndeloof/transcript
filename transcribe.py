@@ -52,6 +52,130 @@ PARAGRAPH_GAP_SECONDS = 2.0
 # Longueur au-delà de laquelle on coupe le paragraphe à la prochaine pause
 PARAGRAPH_MAX_CHARS = 1200
 
+# ---------------------------------------------------------------------------
+# Correction Claude (post-traitement, via Claude Code en mode headless)
+# ---------------------------------------------------------------------------
+
+# Glossaire par défaut, complété par ~/.transcribe/glossaire.txt (un terme
+# par ligne) pour les termes propres à la formation.
+GLOSSARY_FILE = CONFIG_DIR / "glossaire.txt"
+DEFAULT_GLOSSARY = (
+    "psoas, iliaque, scapula, sternum, occiput, sacrum, coccyx, ischions, "
+    "ischio-jambiers, quadriceps, trapèze, sterno-cléido-occipito-mastoïdien, "
+    "fascia, aponévrose, viscéral, péritoine, plèvre, médiastin, diaphragme, "
+    "périoste, vertèbres cervicales/dorsales/lombaires, sacro-iliaque, "
+    "symphyse pubienne, articulation temporo-mandibulaire, nerf vague, "
+    "plexus, proprioception, nocicepteur, mobilisation, manipulation, "
+    "thrust, écoute tissulaire, chaîne musculaire, tenségrité"
+)
+
+CORRECTION_PROMPT = """\
+Tu corriges la transcription automatique (Whisper) d'un cours oral en \
+français donné dans le cadre d'une formation de thérapie manuelle.
+
+Contexte technique : le cours porte sur la thérapie manuelle et \
+l'ostéopathie — anatomie (muscles, os, articulations, fascias, viscères, \
+système nerveux, vascularisation), biomécanique, palpation, techniques de \
+traitement (mobilisations, manipulations, étirements, techniques \
+tissulaires) et physiologie. Attends-toi à un vocabulaire anatomique et \
+médical précis, que Whisper a souvent mal reconnu ou remplacé par des mots \
+courants phonétiquement proches.
+Exemples de termes du domaine : {glossary}
+
+Consignes :
+- Corrige UNIQUEMENT les erreurs de transcription : homophonies (par \
+exemple « brouillon de culture » → « bouillon de culture »), termes \
+anatomiques ou techniques mal reconnus, accords manifestement erronés, \
+ponctuation et majuscules.
+- Ne reformule pas, ne résume pas, n'omets rien : conserve mot pour mot \
+tout ce qui est correct, le découpage en paragraphes et les éventuels \
+horodatages [h:mm:ss] en début de paragraphe.
+- Si un passage est ambigu et que tu n'es pas raisonnablement sûr de la \
+correction, laisse-le tel quel.
+- Réponds avec le texte corrigé uniquement, sans commentaire, préambule ni \
+mise en forme ajoutée.
+
+Texte à corriger :
+
+"""
+
+# Chunks envoyés à Claude (découpés sur les paragraphes)
+CORRECTION_CHUNK_CHARS = 6000
+
+
+def load_glossary() -> str:
+    glossary = DEFAULT_GLOSSARY
+    if GLOSSARY_FILE.exists():
+        extra = [line.strip() for line in
+                 GLOSSARY_FILE.read_text(encoding="utf-8").splitlines()
+                 if line.strip() and not line.startswith("#")]
+        if extra:
+            glossary += ", " + ", ".join(extra)
+    return glossary
+
+
+def claude_cli_version() -> str | None:
+    import shutil
+    import subprocess
+
+    if not shutil.which("claude"):
+        return None
+    try:
+        result = subprocess.run(["claude", "--version"],
+                                capture_output=True, text=True, timeout=30)
+        return result.stdout.strip() or "installé"
+    except Exception:
+        return None
+
+
+def split_into_chunks(text: str, max_chars: int = CORRECTION_CHUNK_CHARS):
+    paragraphs = text.split("\n\n")
+    chunks, current, size = [], [], 0
+    for paragraph in paragraphs:
+        if current and size + len(paragraph) > max_chars:
+            chunks.append("\n\n".join(current))
+            current, size = [], 0
+        current.append(paragraph)
+        size += len(paragraph) + 2
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks
+
+
+def correct_text(text: str, claude_model: str | None = None) -> str:
+    """Corrige le transcript par morceaux via `claude -p` (headless)."""
+    import subprocess
+
+    prompt_header = CORRECTION_PROMPT.format(glossary=load_glossary())
+    chunks = split_into_chunks(text)
+    corrected = []
+    for index, chunk in enumerate(chunks, start=1):
+        print(f"\r  correction Claude {index}/{len(chunks)}…",
+              end="", flush=True)
+        command = ["claude", "-p", "--output-format", "text"]
+        if claude_model:
+            command += ["--model", claude_model]
+        result = subprocess.run(
+            command,
+            input=prompt_header + chunk,
+            capture_output=True, text=True, timeout=900,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"claude -p a échoué (chunk {index}/{len(chunks)}): "
+                f"{result.stderr.strip()[:500]}"
+            )
+        output = result.stdout.strip()
+        # garde-fou : si la réponse s'écarte trop de l'original (résumé,
+        # refus, commentaire), on conserve le texte d'origine
+        if not output or not 0.5 < len(output) / max(len(chunk), 1) < 1.5:
+            print(f"\n  chunk {index}: réponse inattendue, texte original "
+                  "conservé", file=sys.stderr)
+            output = chunk
+        corrected.append(output)
+    print()
+    return "\n\n".join(corrected) + "\n"
+
 
 def setup_windows_cuda_dlls():
     """Rend les DLL cuBLAS/cuDNN des wheels pip visibles pour ctranslate2."""
@@ -188,7 +312,8 @@ def ensure_model_downloaded(model_name: str):
         print()
 
 
-def preflight(model_name: str, need_drive: bool) -> bool:
+def preflight(model_name: str, need_drive: bool,
+              need_claude: bool = False, need_whisper: bool = True) -> bool:
     """Affiche l'état de l'environnement. Retourne False si un ✗ bloque."""
     ok = True
 
@@ -203,36 +328,51 @@ def preflight(model_name: str, need_drive: bool) -> bool:
     print("Vérification de l'environnement :")
     check("ok", f"Python {sys.version.split()[0]}")
 
-    setup_windows_cuda_dlls()
-    try:
-        import av
-        import ctranslate2
-        import faster_whisper
+    if need_whisper:
+        setup_windows_cuda_dlls()
+        try:
+            import av
+            import ctranslate2
+            import faster_whisper
 
-        check("ok", f"faster-whisper {faster_whisper.__version__} "
-                    f"(ctranslate2 {ctranslate2.__version__})")
-        check("ok", f"décodage audio/vidéo intégré (PyAV {av.__version__}, "
-                    "ffmpeg non requis)")
-        gpus = ctranslate2.get_cuda_device_count()
-        if gpus:
-            check("ok", f"GPU CUDA détecté ({gpus} périphérique(s))")
-        else:
-            check("info", "pas de GPU CUDA → transcription sur CPU (lente)")
-    except Exception as exc:
-        check("fail", f"bibliothèques de transcription : {exc}")
+            check("ok", f"faster-whisper {faster_whisper.__version__} "
+                        f"(ctranslate2 {ctranslate2.__version__})")
+            check("ok", f"décodage audio/vidéo intégré (PyAV {av.__version__},"
+                        " ffmpeg non requis)")
+            gpus = ctranslate2.get_cuda_device_count()
+            if gpus:
+                check("ok", f"GPU CUDA détecté ({gpus} périphérique(s))")
+            else:
+                check("info",
+                      "pas de GPU CUDA → transcription sur CPU (lente)")
+        except Exception as exc:
+            check("fail", f"bibliothèques de transcription : {exc}")
 
-    if model_is_cached(model_name):
-        check("ok", f"modèle {model_name} présent dans le cache")
-    else:
-        partial = model_blobs_size(model_name)
-        if partial > 1e6:
-            check("info", f"modèle {model_name} : cache incomplet "
-                          f"({partial / 1e9:.1f} Go déjà téléchargés) → "
-                          "complété au lancement")
+        if model_is_cached(model_name):
+            check("ok", f"modèle {model_name} présent dans le cache")
         else:
-            check("info", f"modèle {model_name} absent du cache → "
-                          "téléchargé au premier lancement "
-                          "(~3 Go pour large-v3)")
+            partial = model_blobs_size(model_name)
+            if partial > 1e6:
+                check("info", f"modèle {model_name} : cache incomplet "
+                              f"({partial / 1e9:.1f} Go déjà téléchargés) → "
+                              "complété au lancement")
+            else:
+                check("info", f"modèle {model_name} absent du cache → "
+                              "téléchargé au premier lancement "
+                              "(~3 Go pour large-v3)")
+
+    if need_claude:
+        version = claude_cli_version()
+        if version:
+            check("ok", f"Claude Code ({version}) pour la correction")
+        else:
+            check("fail", "Claude Code introuvable (commande `claude`) — "
+                          "requis pour --correct/--fix ; voir README.md")
+        if GLOSSARY_FILE.exists():
+            check("ok", f"glossaire personnalisé ({GLOSSARY_FILE})")
+        else:
+            check("info", f"pas de glossaire personnalisé ({GLOSSARY_FILE}) "
+                          "→ glossaire par défaut seul")
 
     if need_drive:
         if CREDENTIALS_FILE.exists():
@@ -358,7 +498,7 @@ def scan_drive_folder(drive, folder_id: str,
     mimeType shortcut) sont résolus vers leur cible.
     """
     files = []
-    existing_docs = set()
+    existing_docs = {}  # (parentId, nom) -> id du Doc
     queue = [(folder_id, "")]
     visited = {folder_id}
     while queue:
@@ -402,7 +542,7 @@ def scan_drive_folder(drive, folder_id: str,
                 if mime == FOLDER_MIME:
                     enqueue_folder(f["id"], f["name"])
                 elif mime == GOOGLE_DOC_MIME:
-                    existing_docs.add((current_id, f["name"]))
+                    existing_docs[(current_id, f["name"])] = f["id"]
                 elif mime == SHORTCUT_MIME:
                     details = f.get("shortcutDetails") or {}
                     target_id = details.get("targetId")
@@ -478,6 +618,32 @@ def create_google_doc(drive, folder_id: str, doc_name: str, text: str) -> str:
         .execute()
     )
     return doc.get("webViewLink", doc["id"])
+
+
+def export_google_doc(drive, doc_id: str) -> str:
+    """Récupère le contenu texte d'un Google Doc."""
+    data = (
+        drive.files()
+        .export(fileId=doc_id, mimeType="text/plain")
+        .execute()
+    )
+    return data.decode("utf-8").lstrip("﻿")
+
+
+def update_google_doc(drive, doc_id: str, text: str):
+    """Remplace le contenu d'un Google Doc (même id, même lien)."""
+    from googleapiclient.http import MediaIoBaseUpload
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(text.encode("utf-8")),
+        mimetype="text/plain",
+        resumable=True,
+    )
+    (
+        drive.files()
+        .update(fileId=doc_id, media_body=media, supportsAllDrives=True)
+        .execute()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +790,8 @@ def run_drive(args) -> int:
                     lambda d: download_file(d, file, Path(tmp)))
                 text = transcribe_file(model, local, args.language,
                                        args.timestamps)
+            if args.correct:
+                text = correct_text(text, args.claude_model)
 
             if args.txt:
                 out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -680,6 +848,8 @@ def run_local(args, source: Path) -> int:
             if model is None:
                 model = load_model(args.model)
             text = transcribe_file(model, path, args.language, args.timestamps)
+            if args.correct:
+                text = correct_text(text, args.claude_model)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(text, encoding="utf-8")
             print(f"  écrit: {out_path}")
@@ -690,6 +860,86 @@ def run_local(args, source: Path) -> int:
 
     print(f"\nTerminé: {len(done)} transcrit(s), {len(skipped)} ignoré(s), "
           f"{len(failed)} en erreur.")
+    return 1 if failed else 0
+
+
+def run_fix_drive(args) -> int:
+    """Corrige via Claude les Google Docs déjà produits (sans retranscrire).
+
+    Seuls les Docs dont le nom correspond à un fichier audio/vidéo du même
+    sous-dossier sont traités ; le Doc est mis à jour en place (même lien).
+    """
+    session = DriveSession()
+    folder_id = extract_folder_id(args.source)
+    files, existing_docs = session.call(
+        "listing du dossier",
+        lambda d: scan_drive_folder(d, folder_id, debug=args.debug))
+
+    targets = []
+    for file in files:
+        base_name = Path(file["name"]).stem
+        doc_id = existing_docs.get((file["parentId"], base_name))
+        if doc_id:
+            targets.append((file["relpath"], base_name, doc_id))
+    if not targets:
+        print("Aucun Google Doc de transcript à corriger dans ce dossier.")
+        return 0
+    print(f"{len(targets)} transcript(s) à corriger "
+          "(sous-dossiers compris).")
+
+    done, failed = [], []
+    for relpath, base_name, doc_id in targets:
+        print(f"\n=== {relpath} ===")
+        try:
+            text = session.call(
+                "lecture du Doc",
+                lambda d: export_google_doc(d, doc_id))
+            corrected = correct_text(text, args.claude_model)
+            session.call(
+                "mise à jour du Doc",
+                lambda d: update_google_doc(d, doc_id, corrected))
+            print(f"  Doc « {base_name} » corrigé et mis à jour")
+            done.append(relpath)
+        except Exception as exc:
+            print(f"  ERREUR: {exc}", file=sys.stderr)
+            failed.append(relpath)
+
+    print(f"\nTerminé: {len(done)} corrigé(s), {len(failed)} en erreur.")
+    for name in failed:
+        print(f"  échec: {name}", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def run_fix_local(args, source: Path) -> int:
+    """Corrige via Claude des fichiers .txt existants, en place."""
+    if source.is_dir():
+        files = sorted(p for p in source.rglob("*.txt") if p.is_file())
+    elif source.suffix.lower() == ".txt":
+        files = [source]
+    else:
+        print("--fix en local attend un fichier .txt ou un dossier "
+              "en contenant.", file=sys.stderr)
+        return 1
+    if not files:
+        print("Aucun fichier .txt à corriger.")
+        return 0
+    print(f"{len(files)} fichier(s) .txt à corriger.")
+
+    done, failed = [], []
+    for path in files:
+        rel = path.relative_to(source) if source.is_dir() else path.name
+        print(f"\n=== {rel} ===")
+        try:
+            corrected = correct_text(path.read_text(encoding="utf-8"),
+                                     args.claude_model)
+            path.write_text(corrected, encoding="utf-8")
+            print(f"  corrigé: {path}")
+            done.append(str(rel))
+        except Exception as exc:
+            print(f"  ERREUR: {exc}", file=sys.stderr)
+            failed.append(str(rel))
+
+    print(f"\nTerminé: {len(done)} corrigé(s), {len(failed)} en erreur.")
     return 1 if failed else 0
 
 
@@ -724,6 +974,17 @@ def main() -> int:
     parser.add_argument("--txt", metavar="DIR", default=None,
                         help="écrire des fichiers .txt dans DIR au lieu de "
                              "créer des Google Docs")
+    parser.add_argument("--correct", action="store_true",
+                        help="corriger le transcript via Claude "
+                             "(vocabulaire anatomique, homophonies) avant "
+                             "d'écrire le Doc/.txt")
+    parser.add_argument("--fix", action="store_true",
+                        help="ne rien transcrire : corriger via Claude les "
+                             "Google Docs (ou .txt) déjà produits pour les "
+                             "fichiers audio/vidéo du dossier")
+    parser.add_argument("--claude-model", default=None, metavar="MODEL",
+                        help="modèle passé à `claude -p` pour la correction "
+                             "(défaut: modèle configuré dans Claude Code)")
     args = parser.parse_args()
 
     if args.language and args.language.lower() == "auto":
@@ -774,12 +1035,17 @@ def main() -> int:
 
 def run(args) -> int:
     if args.check:
-        return 0 if preflight(args.model, need_drive=True) else 1
+        return 0 if preflight(args.model, need_drive=True,
+                              need_claude=True) else 1
 
     local = Path(args.source).expanduser()
     is_local = local.exists()
-    if not preflight(args.model, need_drive=not is_local):
+    need_claude = args.correct or args.fix
+    if not preflight(args.model, need_drive=not is_local,
+                     need_claude=need_claude, need_whisper=not args.fix):
         return 1
+    if args.fix:
+        return run_fix_local(args, local) if is_local else run_fix_drive(args)
     if is_local:
         return run_local(args, local)
     return run_drive(args)

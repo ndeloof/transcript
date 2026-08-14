@@ -85,6 +85,20 @@ DEFAULT_GLOSSARY = (
     # viscéral et système nerveux
     "viscéral, péritoine, mésentère, plèvre, médiastin, nerf vague, plexus, "
     "proprioception, nocicepteur, "
+    # organes génitaux, gynécologie
+    "utérus, ovaires, trompes de Fallope, col de l'utérus, endomètre, "
+    "myomètre, vagin, vulve, ligaments larges, ligaments ronds, "
+    "ligaments utéro-sacrés, antéversion, rétroversion, ptôse, petit bassin, "
+    "prostate, testicules, épididyme, cordon spermatique, "
+    "cycle menstruel, ovulation, menstruations, ménopause, "
+    "œstrogènes, progestérone, ocytocine, prolactine, fertilité, "
+    # maternité, grossesse, périnatalité
+    "grossesse, utérus gravide, embryon, fœtus, placenta, "
+    "cordon ombilical, liquide amniotique, membranes amniotiques, "
+    "accouchement, contractions, bassin obstétrical, détroit supérieur, "
+    "détroit inférieur, épisiotomie, césarienne, post-partum, allaitement, "
+    "périnatalité, nouveau-né, nourrisson, fontanelles, moulage crânien, "
+    "plagiocéphalie, torticolis congénital, coliques du nourrisson, "
     # énergétique (la méthode Poyet s'appuie sur l'énergétique chinoise)
     "méridiens, vaisseau gouverneur, vaisseau conception, énergétique, "
     # gestes et concepts
@@ -103,9 +117,13 @@ membranes de tension réciproque), l'écoute tissulaire et les corrections \
 douces par induction, l'anatomie (os du crâne, rachis, bassin, membres, \
 fascias, viscères, système nerveux), la biomécanique, la palpation, ainsi \
 que l'énergétique chinoise (méridiens, vaisseau gouverneur et vaisseau \
-conception) sur laquelle la méthode s'appuie. Attends-toi à un vocabulaire \
-anatomique, ostéopathique et énergétique précis, que Whisper a souvent mal \
-reconnu ou remplacé par des mots courants phonétiquement proches.
+conception) sur laquelle la méthode s'appuie. Certains cours portent \
+spécifiquement sur la sphère gynécologique et la périnatalité : organes \
+génitaux, maternité, grossesse, accouchement, post-partum, prise en charge \
+du nouveau-né et du nourrisson. Attends-toi à un vocabulaire anatomique, \
+ostéopathique, gynéco-obstétrical et énergétique précis, que Whisper a \
+souvent mal reconnu ou remplacé par des mots courants phonétiquement \
+proches.
 Exemples de termes du domaine : {glossary}
 
 Consignes :

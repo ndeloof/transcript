@@ -60,26 +60,52 @@ PARAGRAPH_MAX_CHARS = 1200
 # par ligne) pour les termes propres à la formation.
 GLOSSARY_FILE = CONFIG_DIR / "glossaire.txt"
 DEFAULT_GLOSSARY = (
-    "psoas, iliaque, scapula, sternum, occiput, sacrum, coccyx, ischions, "
-    "ischio-jambiers, quadriceps, trapèze, sterno-cléido-occipito-mastoïdien, "
-    "fascia, aponévrose, viscéral, péritoine, plèvre, médiastin, diaphragme, "
-    "périoste, vertèbres cervicales/dorsales/lombaires, sacro-iliaque, "
-    "symphyse pubienne, articulation temporo-mandibulaire, nerf vague, "
-    "plexus, proprioception, nocicepteur, mobilisation, manipulation, "
-    "thrust, écoute tissulaire, chaîne musculaire, tenségrité"
+    # somatopathie / méthode Poyet
+    "somatopathie, somatopathe, méthode Poyet, Maurice-Raymond Poyet, "
+    "mouvement respiratoire primaire (MRP), axe crânio-sacré, crânio-sacré, "
+    "écoute tissulaire, induction, still point, point d'ancrage, "
+    "mémoire tissulaire, mémoires cellulaires, ondes, rythme crânien, "
+    # crâne et système crânio-sacré
+    "symphyse sphéno-basilaire (SSB), sphénoïde, ethmoïde, occiput, "
+    "os temporaux, os pariétaux, os frontal, vomer, maxillaires, mandibule, "
+    "os hyoïde, sutures crâniennes, bregma, lambda, ptérion, astérion, "
+    "faux du cerveau, tente du cervelet, dure-mère, "
+    "membranes de tension réciproque, liquide céphalo-rachidien (LCR), "
+    # rachis, bassin, charnières
+    "atlas, axis, charnière occipito-atloïdienne, charnière cervico-dorsale, "
+    "charnière dorso-lombaire, charnière lombo-sacrée, vertèbres cervicales/"
+    "dorsales/lombaires, sacrum, coccyx, os iliaques, sacro-iliaque, "
+    "symphyse pubienne, articulation temporo-mandibulaire (ATM), "
+    # membres et anatomie générale
+    "scapula, clavicule, sternum, humérus, radius, ulna, carpe, scaphoïde, "
+    "fémur, tibia, fibula, talus, calcanéum, cuboïde, cunéiformes, ischions, "
+    "ischio-jambiers, quadriceps, psoas, trapèze, "
+    "sterno-cléido-occipito-mastoïdien, diaphragme, périnée, "
+    "plancher pelvien, fascia, aponévrose, périoste, "
+    # viscéral et système nerveux
+    "viscéral, péritoine, mésentère, plèvre, médiastin, nerf vague, plexus, "
+    "proprioception, nocicepteur, "
+    # énergétique (la méthode Poyet s'appuie sur l'énergétique chinoise)
+    "méridiens, vaisseau gouverneur, vaisseau conception, énergétique, "
+    # gestes et concepts
+    "mobilisation, manipulation, chaîne musculaire, tenségrité"
 )
 
 CORRECTION_PROMPT = """\
 Tu corriges la transcription automatique (Whisper) d'un cours oral en \
-français donné dans le cadre d'une formation de thérapie manuelle.
+français donné dans le cadre d'une formation de somatopathie — ostéopathie \
+douce selon la méthode Poyet.
 
-Contexte technique : le cours porte sur la thérapie manuelle et \
-l'ostéopathie — anatomie (muscles, os, articulations, fascias, viscères, \
-système nerveux, vascularisation), biomécanique, palpation, techniques de \
-traitement (mobilisations, manipulations, étirements, techniques \
-tissulaires) et physiologie. Attends-toi à un vocabulaire anatomique et \
-médical précis, que Whisper a souvent mal reconnu ou remplacé par des mots \
-courants phonétiquement proches.
+Contexte technique : le cours porte sur la somatopathie et l'ostéopathie \
+informationnelle méthode Poyet (Maurice-Raymond Poyet) — le mouvement \
+respiratoire primaire (MRP), l'axe crânio-sacré (crâne, sacrum, dure-mère, \
+membranes de tension réciproque), l'écoute tissulaire et les corrections \
+douces par induction, l'anatomie (os du crâne, rachis, bassin, membres, \
+fascias, viscères, système nerveux), la biomécanique, la palpation, ainsi \
+que l'énergétique chinoise (méridiens, vaisseau gouverneur et vaisseau \
+conception) sur laquelle la méthode s'appuie. Attends-toi à un vocabulaire \
+anatomique, ostéopathique et énergétique précis, que Whisper a souvent mal \
+reconnu ou remplacé par des mots courants phonétiquement proches.
 Exemples de termes du domaine : {glossary}
 
 Consignes :

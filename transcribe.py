@@ -192,10 +192,16 @@ def correct_text(text: str, claude_model: str | None = None) -> str:
                 f"{result.stderr.strip()[:500]}"
             )
         output = result.stdout.strip()
-        # garde-fou : si la réponse s'écarte trop de l'original (résumé,
-        # refus, commentaire), on conserve le texte d'origine
+        # garde-fous : si la réponse s'écarte trop de l'original (résumé,
+        # refus, commentaire) ou si les horodatages [h:mm:ss] ne sont pas
+        # conservés à l'identique, on garde le texte d'origine
+        timestamps = re.findall(r"\[\d+:\d{2}:\d{2}\]", chunk)
         if not output or not 0.5 < len(output) / max(len(chunk), 1) < 1.5:
             print(f"\n  chunk {index}: réponse inattendue, texte original "
+                  "conservé", file=sys.stderr)
+            output = chunk
+        elif re.findall(r"\[\d+:\d{2}:\d{2}\]", output) != timestamps:
+            print(f"\n  chunk {index}: horodatages modifiés, texte original "
                   "conservé", file=sys.stderr)
             output = chunk
         corrected.append(output)

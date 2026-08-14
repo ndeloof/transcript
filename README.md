@@ -124,7 +124,9 @@ Claude Pro/Max suffit, pas besoin de clé API) — la correction appelle
 `claude -p` en mode headless. Installation : <https://claude.ai/download>,
 puis lancer `claude` une fois pour se connecter.
 
-Le glossaire par défaut (termes d'anatomie et de thérapie manuelle) peut
-être complété dans `~/.transcribe/glossaire.txt` (un terme par ligne) avec
-le vocabulaire propre à la formation. `--claude-model` permet de choisir le
-modèle (défaut : celui configuré dans Claude Code).
+Le glossaire du domaine vit dans **[`glossaire.txt`](glossaire.txt)**
+(versionné à côté du script — somatopathie/méthode Poyet, crânio-sacré,
+anatomie, gynécologie, maternité/périnatalité, énergétique) : enrichis-le
+directement, un terme par ligne. Des ajouts personnels locaux sont aussi
+possibles dans `~/.transcribe/glossaire.txt`. `--claude-model` permet de
+choisir le modèle (défaut : celui configuré dans Claude Code).

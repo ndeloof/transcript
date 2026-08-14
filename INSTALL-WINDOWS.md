@@ -48,14 +48,17 @@ nvidia-smi
 Rien d'autre à installer : ffmpeg n'est pas nécessaire (le décodage
 audio/vidéo est embarqué dans les bibliothèques Python).
 
-## 3. Copier le script
+## 3. Récupérer le script
 
-Créer un dossier et y copier `transcribe.py` (par clé USB, cloud, etc.) :
+De préférence en clonant le dépôt (permet ensuite `git pull` pour les mises
+à jour) :
 
 ```powershell
-mkdir $env:USERPROFILE\transcribe
-# puis copier transcribe.py dans C:\Users\<votre-nom>\transcribe\
+git clone https://github.com/ndeloof/transcript.git $env:USERPROFILE\transcribe
 ```
+
+(sans git : copier `transcribe.py` **et** `glossaire.txt` — utilisé par la
+correction Claude — dans `C:\Users\<votre-nom>\transcribe\`)
 
 ## 4. Installer le fichier d'identification Google
 

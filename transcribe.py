@@ -56,54 +56,11 @@ PARAGRAPH_MAX_CHARS = 1200
 # Correction Claude (post-traitement, via Claude Code en mode headless)
 # ---------------------------------------------------------------------------
 
-# Glossaire par défaut, complété par ~/.transcribe/glossaire.txt (un terme
-# par ligne) pour les termes propres à la formation.
+# Le glossaire du domaine vit dans glossaire.txt à côté du script
+# (versionné dans le repo), complété par ~/.transcribe/glossaire.txt
+# pour les ajouts personnels locaux. Un terme par ligne, # = commentaire.
+SCRIPT_GLOSSARY_FILE = Path(__file__).resolve().parent / "glossaire.txt"
 GLOSSARY_FILE = CONFIG_DIR / "glossaire.txt"
-DEFAULT_GLOSSARY = (
-    # somatopathie / méthode Poyet
-    "somatopathie, somatopathe, méthode Poyet, Maurice-Raymond Poyet, "
-    "mouvement respiratoire primaire (MRP), axe crânio-sacré, crânio-sacré, "
-    "écoute tissulaire, induction, still point, point d'ancrage, "
-    "mémoire tissulaire, mémoires cellulaires, ondes, rythme crânien, "
-    # crâne et système crânio-sacré
-    "symphyse sphéno-basilaire (SSB), sphénoïde, ethmoïde, occiput, "
-    "os temporaux, os pariétaux, os frontal, vomer, maxillaires, mandibule, "
-    "os hyoïde, sutures crâniennes, bregma, lambda, ptérion, astérion, "
-    "faux du cerveau, tente du cervelet, dure-mère, "
-    "membranes de tension réciproque, liquide céphalo-rachidien (LCR), "
-    # rachis, bassin, charnières
-    "atlas, axis, charnière occipito-atloïdienne, charnière cervico-dorsale, "
-    "charnière dorso-lombaire, charnière lombo-sacrée, vertèbres cervicales/"
-    "dorsales/lombaires, sacrum, coccyx, os iliaques, sacro-iliaque, "
-    "symphyse pubienne, articulation temporo-mandibulaire (ATM), "
-    # membres et anatomie générale
-    "scapula, clavicule, sternum, humérus, radius, ulna, carpe, scaphoïde, "
-    "fémur, tibia, fibula, talus, calcanéum, cuboïde, cunéiformes, ischions, "
-    "ischio-jambiers, quadriceps, psoas, trapèze, "
-    "sterno-cléido-occipito-mastoïdien, diaphragme, périnée, "
-    "plancher pelvien, fascia, aponévrose, périoste, "
-    # viscéral et système nerveux
-    "viscéral, péritoine, mésentère, plèvre, médiastin, nerf vague, plexus, "
-    "proprioception, nocicepteur, "
-    # organes génitaux, gynécologie
-    "utérus, ovaires, trompes de Fallope, col de l'utérus, endomètre, "
-    "myomètre, vagin, vulve, ligaments larges, ligaments ronds, "
-    "ligaments utéro-sacrés, antéversion, rétroversion, ptôse, petit bassin, "
-    "prostate, testicules, épididyme, cordon spermatique, "
-    "cycle menstruel, ovulation, menstruations, ménopause, "
-    "œstrogènes, progestérone, ocytocine, prolactine, fertilité, "
-    # maternité, grossesse, périnatalité
-    "grossesse, utérus gravide, embryon, fœtus, placenta, "
-    "cordon ombilical, liquide amniotique, membranes amniotiques, "
-    "accouchement, contractions, bassin obstétrical, détroit supérieur, "
-    "détroit inférieur, épisiotomie, césarienne, post-partum, allaitement, "
-    "périnatalité, nouveau-né, nourrisson, fontanelles, moulage crânien, "
-    "plagiocéphalie, torticolis congénital, coliques du nourrisson, "
-    # énergétique (la méthode Poyet s'appuie sur l'énergétique chinoise)
-    "méridiens, vaisseau gouverneur, vaisseau conception, énergétique, "
-    # gestes et concepts
-    "mobilisation, manipulation, chaîne musculaire, tenségrité"
-)
 
 CORRECTION_PROMPT = """\
 Tu corriges la transcription automatique (Whisper) d'un cours oral en \
@@ -118,10 +75,12 @@ douces par induction, l'anatomie (os du crâne, rachis, bassin, membres, \
 fascias, viscères, système nerveux), la biomécanique, la palpation, ainsi \
 que l'énergétique chinoise (méridiens, vaisseau gouverneur et vaisseau \
 conception) sur laquelle la méthode s'appuie. Certains cours portent \
-spécifiquement sur la sphère gynécologique et la périnatalité : organes \
-génitaux, maternité, grossesse, accouchement, post-partum, prise en charge \
-du nouveau-né et du nourrisson. Attends-toi à un vocabulaire anatomique, \
-ostéopathique, gynéco-obstétrical et énergétique précis, que Whisper a \
+spécifiquement sur la sphère gynécologique, la périnatalité et la \
+pédiatrie : organes génitaux, maternité, grossesse, accouchement, \
+post-partum, prise en charge du nouveau-né, du nourrisson et de l'enfant \
+(développement psychomoteur, réflexes archaïques, troubles de l'oralité). \
+Attends-toi à un vocabulaire anatomique, ostéopathique, \
+gynéco-obstétrical, pédiatrique et énergétique précis, que Whisper a \
 souvent mal reconnu ou remplacé par des mots courants phonétiquement \
 proches.
 Exemples de termes du domaine : {glossary}
@@ -148,14 +107,13 @@ CORRECTION_CHUNK_CHARS = 6000
 
 
 def load_glossary() -> str:
-    glossary = DEFAULT_GLOSSARY
-    if GLOSSARY_FILE.exists():
-        extra = [line.strip() for line in
-                 GLOSSARY_FILE.read_text(encoding="utf-8").splitlines()
-                 if line.strip() and not line.startswith("#")]
-        if extra:
-            glossary += ", " + ", ".join(extra)
-    return glossary
+    terms = []
+    for path in (SCRIPT_GLOSSARY_FILE, GLOSSARY_FILE):
+        if path.exists():
+            terms += [line.strip() for line in
+                      path.read_text(encoding="utf-8").splitlines()
+                      if line.strip() and not line.lstrip().startswith("#")]
+    return ", ".join(terms)
 
 
 def claude_cli_version() -> str | None:
@@ -418,11 +376,20 @@ def preflight(model_name: str, need_drive: bool,
         else:
             check("fail", "Claude Code introuvable (commande `claude`) — "
                           "requis pour --correct/--fix ; voir README.md")
+        if SCRIPT_GLOSSARY_FILE.exists():
+            count = len([line for line in SCRIPT_GLOSSARY_FILE.read_text(
+                encoding="utf-8").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")])
+            check("ok", f"glossaire du domaine ({SCRIPT_GLOSSARY_FILE.name}, "
+                        f"{count} termes)")
+        else:
+            check("fail", f"glossaire du domaine absent "
+                          f"({SCRIPT_GLOSSARY_FILE}) — récupérer "
+                          "glossaire.txt avec le script")
         if GLOSSARY_FILE.exists():
             check("ok", f"glossaire personnalisé ({GLOSSARY_FILE})")
         else:
-            check("info", f"pas de glossaire personnalisé ({GLOSSARY_FILE}) "
-                          "→ glossaire par défaut seul")
+            check("info", f"pas de glossaire personnalisé ({GLOSSARY_FILE})")
 
     if need_drive:
         if CREDENTIALS_FILE.exists():

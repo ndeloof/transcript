@@ -1,0 +1,204 @@
+# Glossaire des termes du domaine, utilisé par la correction Claude
+# (--correct / --fix). Un terme (ou petit groupe de termes) par ligne,
+# les lignes commençant par # sont ignorées.
+# Complété localement par ~/.transcribe/glossaire.txt si présent.
+
+# --- somatopathie / méthode Poyet ---
+somatopathie
+somatopathe
+méthode Poyet
+Maurice-Raymond Poyet
+mouvement respiratoire primaire (MRP)
+axe crânio-sacré
+crânio-sacré
+écoute tissulaire
+induction
+still point
+point d'ancrage
+mémoire tissulaire
+mémoires cellulaires
+ondes
+rythme crânien
+
+# --- crâne et système crânio-sacré ---
+symphyse sphéno-basilaire (SSB)
+sphénoïde
+ethmoïde
+occiput
+os temporaux
+os pariétaux
+os frontal
+vomer
+maxillaires
+mandibule
+os hyoïde
+sutures crâniennes
+bregma
+lambda
+ptérion
+astérion
+faux du cerveau
+tente du cervelet
+dure-mère
+membranes de tension réciproque
+liquide céphalo-rachidien (LCR)
+
+# --- rachis, bassin, charnières ---
+atlas
+axis
+charnière occipito-atloïdienne
+charnière cervico-dorsale
+charnière dorso-lombaire
+charnière lombo-sacrée
+vertèbres cervicales/dorsales/lombaires
+sacrum
+coccyx
+os iliaques
+sacro-iliaque
+symphyse pubienne
+articulation temporo-mandibulaire (ATM)
+
+# --- membres et anatomie générale ---
+scapula
+clavicule
+sternum
+humérus
+radius
+ulna
+carpe
+scaphoïde
+fémur
+tibia
+fibula
+talus
+calcanéum
+cuboïde
+cunéiformes
+ischions
+ischio-jambiers
+quadriceps
+psoas
+trapèze
+sterno-cléido-occipito-mastoïdien
+diaphragme
+périnée
+plancher pelvien
+fascia
+aponévrose
+périoste
+
+# --- viscéral et système nerveux ---
+viscéral
+péritoine
+mésentère
+plèvre
+médiastin
+nerf vague
+plexus
+proprioception
+nocicepteur
+
+# --- organes génitaux, gynécologie ---
+utérus
+ovaires
+trompes de Fallope
+col de l'utérus
+endomètre
+myomètre
+vagin
+vulve
+ligaments larges
+ligaments ronds
+ligaments utéro-sacrés
+antéversion
+rétroversion
+ptôse
+petit bassin
+prostate
+testicules
+épididyme
+cordon spermatique
+cycle menstruel
+ovulation
+menstruations
+ménopause
+œstrogènes
+progestérone
+ocytocine
+prolactine
+fertilité
+
+# --- maternité, grossesse, périnatalité ---
+grossesse
+utérus gravide
+embryon
+fœtus
+placenta
+cordon ombilical
+liquide amniotique
+membranes amniotiques
+accouchement
+contractions
+bassin obstétrical
+détroit supérieur
+détroit inférieur
+épisiotomie
+césarienne
+post-partum
+allaitement
+périnatalité
+nouveau-né
+nourrisson
+fontanelles
+moulage crânien
+plagiocéphalie
+torticolis congénital
+coliques du nourrisson
+
+# --- pédiatrie ---
+pédiatrie
+développement psychomoteur
+acquisitions motrices
+motricité libre
+réflexes archaïques
+réflexe de Moro
+réflexe de succion
+grasping
+fouissement
+succion-déglutition
+frein de langue
+ankyloglossie
+troubles de l'oralité
+régurgitations
+reflux gastro-œsophagien (RGO)
+otites séreuses
+canal lacrymal
+poussées dentaires
+croissance
+courbes de croissance
+dysplasie de hanche
+scoliose
+attitude scoliotique
+cyphose
+lordose
+énurésie
+troubles du sommeil
+prématurité
+prématuré
+présentation en siège
+forceps
+ventouse obstétricale
+portage
+puberté
+
+# --- énergétique (la méthode Poyet s'appuie sur l'énergétique chinoise) ---
+méridiens
+vaisseau gouverneur
+vaisseau conception
+énergétique
+
+# --- gestes et concepts ---
+mobilisation
+manipulation
+chaîne musculaire
+tenségrité

@@ -182,16 +182,45 @@ def load_glossary() -> str:
     return ", ".join(terms)
 
 
-def claude_cli_version() -> str | None:
+# Emplacements de Claude Code hors PATH : installateur natif (~/.local/bin),
+# ancienne installation locale (~/.claude/local), npm global sous Windows.
+def claude_candidates() -> list[Path]:
+    home = Path.home()
+    candidates = [home / ".local" / "bin" / "claude",
+                  home / ".claude" / "local" / "claude"]
+    if sys.platform == "win32":
+        candidates.append(home / ".local" / "bin" / "claude.exe")
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "npm" / "claude.cmd")
+    return candidates
+
+
+def find_claude() -> str | None:
+    """Chemin de l'exécutable `claude` (PATH, puis emplacements connus)."""
     import shutil
+
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in claude_candidates():
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def claude_cli_version() -> str | None:
     import subprocess
 
-    if not shutil.which("claude"):
+    claude = find_claude()
+    if not claude:
         return None
     try:
-        result = subprocess.run(["claude", "--version"],
+        result = subprocess.run([claude, "--version"],
                                 capture_output=True, timeout=30,
                                 encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            return None
         return result.stdout.strip() or "installé"
     except Exception:
         return None
@@ -216,7 +245,13 @@ def run_claude(prompt: str, claude_model: str | None = None,
     """Envoie un prompt à `claude -p` (headless) et retourne sa réponse."""
     import subprocess
 
-    command = ["claude", "-p", "--output-format", "text"]
+    claude = find_claude()
+    if not claude:
+        raise RuntimeError(
+            "Claude Code introuvable : commande `claude` absente du PATH et "
+            "de " + ", ".join(str(c) for c in claude_candidates())
+            + " — voir README.md")
+    command = [claude, "-p", "--output-format", "text"]
     if claude_model:
         command += ["--model", claude_model]
     # encoding explicite : sous Windows, text=True utiliserait cp1252,
@@ -228,8 +263,14 @@ def run_claude(prompt: str, claude_model: str | None = None,
         encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
+        # stderr est souvent vide (ex. session non connectée) : on rapporte
+        # aussi la fin de stdout pour comprendre la cause
+        detail = result.stderr.strip() or result.stdout.strip()[-500:]
         raise RuntimeError(
-            f"claude -p a échoué ({label}): {result.stderr.strip()[:500]}"
+            f"claude -p a échoué ({label}, code {result.returncode}"
+            f"{', ' + detail[:500] if detail else ', aucune sortie'}) — "
+            f"vérifier avec `{claude} -p 'bonjour'` que Claude Code est "
+            "connecté (lancer `claude` puis /login)"
         )
     return result.stdout.strip()
 
@@ -485,12 +526,14 @@ def preflight(model_name: str, need_drive: bool,
     if need_claude:
         version = claude_cli_version()
         if version:
-            check("ok", f"Claude Code ({version}) pour la correction / "
-                        "le résumé")
+            check("ok", f"Claude Code ({version}, {find_claude()}) pour la "
+                        "correction / le résumé")
         else:
-            check("fail", "Claude Code introuvable (commande `claude`) — "
-                          "requis pour --correct/--fix/--summarize ; "
-                          "voir README.md")
+            searched = ", ".join(str(c) for c in claude_candidates())
+            check("fail", "Claude Code introuvable ou non fonctionnel "
+                          f"(commande `claude` cherchée dans le PATH et "
+                          f"{searched}) — requis pour "
+                          "--correct/--fix/--summarize ; voir README.md")
         if SCRIPT_GLOSSARY_FILE.exists():
             count = len([line for line in SCRIPT_GLOSSARY_FILE.read_text(
                 encoding="utf-8").splitlines()

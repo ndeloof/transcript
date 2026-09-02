@@ -130,7 +130,10 @@ les ignore — `--force` pour recorriger malgré tout.
 Pré-requis : **Claude Code** installé et connecté (une souscription
 Claude Pro/Max suffit, pas besoin de clé API) — la correction appelle
 `claude -p` en mode headless. Installation : <https://claude.ai/download>,
-puis lancer `claude` une fois pour se connecter.
+puis lancer `claude` une fois pour se connecter. La commande `claude` est
+cherchée dans le PATH, puis dans `~/.local/bin` (installateur natif) ; le
+bilan d'environnement affiche le chemin retenu. Si `claude -p` échoue
+(session non connectée…), le message rapporte la sortie de la commande.
 
 Le glossaire du domaine vit dans **[`glossaire.txt`](glossaire.txt)**
 (versionné à côté du script — somatopathie/méthode Poyet, crânio-sacré,

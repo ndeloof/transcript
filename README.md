@@ -84,6 +84,10 @@ uv run transcribe.py <ID-dossier> --correct
 
 # Corriger les Google Docs DÉJÀ produits, sans retranscrire l'audio
 uv run transcribe.py <ID-dossier> --fix
+
+# Résumer les Google Docs de transcript déjà produits
+# → un Doc « <nom> - résumé » créé à côté de chacun
+uv run transcribe.py <ID-dossier> --summarize
 ```
 
 Le même bilan d'environnement s'affiche au début de chaque lancement.
@@ -134,3 +138,25 @@ anatomie, gynécologie, maternité/périnatalité, énergétique) : enrichis-le
 directement, un terme par ligne. Des ajouts personnels locaux sont aussi
 possibles dans `~/.transcribe/glossaire.txt`. `--claude-model` permet de
 choisir le modèle (défaut : celui configuré dans Claude Code).
+
+## Résumé Claude (`--summarize`)
+
+`--summarize` **ne retranscrit rien** : il parcourt le dossier Drive
+(sous-dossiers compris), et pour chaque fichier audio/vidéo dont le Google
+Doc de transcript existe dans le même sous-dossier, en produit un résumé
+structuré via **Claude** (titre, synthèse, sections par thème, techniques
+et protocoles décrits, points à retenir) dans un nouveau Google Doc
+**« `<nom> - résumé` »** créé juste à côté. Le Markdown produit est importé
+par Drive en titres et listes.
+
+Les transcripts dont le Doc de résumé existe déjà sont ignorés — `--force`
+pour régénérer le résumé (le Doc existant est alors mis à jour en place).
+Les transcripts très longs sont résumés par parties, puis les résumés
+partiels sont fusionnés. Idéalement, lancer `--fix` avant `--summarize`
+pour résumer un transcript déjà corrigé.
+
+En local (dossier de `.txt`), le résumé est écrit dans un fichier
+`<nom> - résumé.md` à côté de chaque transcript.
+
+Mêmes pré-requis que la correction : Claude Code installé et connecté,
+`glossaire.txt` à côté du script ; `--claude-model` s'applique aussi.

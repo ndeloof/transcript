@@ -51,6 +51,8 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 # Métadonnée Drive (appProperties) marquant un Doc déjà corrigé par Claude
 CORRECTED_PROP = "transcribeCorrected"
+# Suffixe du Doc (ou fichier) de résumé, créé à côté du transcript
+SUMMARY_SUFFIX = " - résumé"
 
 # Extensions reconnues en mode local (source = fichier/dossier sur disque)
 MEDIA_EXTENSIONS = {
@@ -73,11 +75,7 @@ PARAGRAPH_MAX_CHARS = 1200
 SCRIPT_GLOSSARY_FILE = Path(__file__).resolve().parent / "glossaire.txt"
 GLOSSARY_FILE = CONFIG_DIR / "glossaire.txt"
 
-CORRECTION_PROMPT = """\
-Tu corriges la transcription automatique (Whisper) d'un cours oral en \
-français donné dans le cadre d'une formation de somatopathie — ostéopathie \
-douce selon la méthode Poyet.
-
+DOMAIN_CONTEXT = """\
 Contexte technique : le cours porte sur la somatopathie et l'ostéopathie \
 informationnelle méthode Poyet (Maurice-Raymond Poyet) — le mouvement \
 respiratoire primaire (MRP), l'axe crânio-sacré (crâne, sacrum, dure-mère, \
@@ -89,7 +87,15 @@ conception) sur laquelle la méthode s'appuie. Certains cours portent \
 spécifiquement sur la sphère gynécologique, la périnatalité et la \
 pédiatrie : organes génitaux, maternité, grossesse, accouchement, \
 post-partum, prise en charge du nouveau-né, du nourrisson et de l'enfant \
-(développement psychomoteur, réflexes archaïques, troubles de l'oralité). \
+(développement psychomoteur, réflexes archaïques, troubles de l'oralité).\
+"""
+
+CORRECTION_PROMPT = """\
+Tu corriges la transcription automatique (Whisper) d'un cours oral en \
+français donné dans le cadre d'une formation de somatopathie — ostéopathie \
+douce selon la méthode Poyet.
+
+""" + DOMAIN_CONTEXT + """ \
 Attends-toi à un vocabulaire anatomique, ostéopathique, \
 gynéco-obstétrical, pédiatrique et énergétique précis, que Whisper a \
 souvent mal reconnu ou remplacé par des mots courants phonétiquement \
@@ -115,6 +121,55 @@ Texte à corriger :
 
 # Chunks envoyés à Claude (découpés sur les paragraphes)
 CORRECTION_CHUNK_CHARS = 6000
+
+SUMMARY_PROMPT = """\
+Tu rédiges le résumé de la transcription d'un cours oral en français donné \
+dans le cadre d'une formation de somatopathie — ostéopathie douce selon la \
+méthode Poyet. Le résumé est destiné aux élèves, pour réviser le cours sans \
+le réécouter.
+
+""" + DOMAIN_CONTEXT + """
+Exemples de termes du domaine : {glossary}
+
+Consignes :
+- Rédige en français, en Markdown : un titre de niveau 1 (le sujet du \
+cours), un paragraphe de synthèse (3 à 5 phrases), puis des sections de \
+niveau 2 par thème abordé, dans l'ordre du cours, avec des listes à puces \
+concises.
+- Détaille particulièrement les techniques, protocoles et tests décrits \
+(étapes, positions, repères anatomiques, ce que l'on cherche à ressentir) \
+et les notions théoriques importantes (anatomie, physiologie, \
+énergétique).
+- Termine par une section « Points à retenir » (5 à 10 puces).
+- Reste strictement fidèle au contenu : n'invente rien, n'ajoute aucune \
+connaissance extérieure au cours. Ignore les digressions, les échanges \
+d'organisation, les répétitions et les horodatages [h:mm:ss].
+- Réponds avec le résumé uniquement, sans commentaire ni préambule.
+
+Transcription :
+
+"""
+
+# Au-delà de cette taille, le transcript est résumé par parties, puis les
+# résumés partiels sont fusionnés (un cours de 3 h ≈ 150 000 caractères)
+SUMMARY_CHUNK_CHARS = 200_000
+
+SUMMARY_PART_PROMPT = SUMMARY_PROMPT.replace(
+    "Transcription :",
+    "Il s'agit de la partie {part}/{parts} d'un cours long : résume cette "
+    "partie seule (sans titre de niveau 1 ni section « Points à "
+    "retenir »).\n\nTranscription (partie {part}/{parts}) :")
+
+SUMMARY_MERGE_PROMPT = """\
+Voici, dans l'ordre, les résumés Markdown des parties successives d'un même \
+cours oral de somatopathie (méthode Poyet). Fusionne-les en un seul résumé \
+cohérent, au même format : un titre de niveau 1, un paragraphe de synthèse, \
+des sections de niveau 2 par thème avec listes à puces, puis une section \
+« Points à retenir » (5 à 10 puces). Regroupe les thèmes qui se répètent \
+d'une partie à l'autre, n'ajoute rien qui ne figure pas dans les résumés. \
+Réponds avec le résumé fusionné uniquement, sans commentaire.
+
+"""
 
 
 def load_glossary() -> str:
@@ -156,33 +211,39 @@ def split_into_chunks(text: str, max_chars: int = CORRECTION_CHUNK_CHARS):
     return chunks
 
 
-def correct_text(text: str, claude_model: str | None = None) -> str:
-    """Corrige le transcript par morceaux via `claude -p` (headless)."""
+def run_claude(prompt: str, claude_model: str | None = None,
+               label: str = "claude -p") -> str:
+    """Envoie un prompt à `claude -p` (headless) et retourne sa réponse."""
     import subprocess
 
+    command = ["claude", "-p", "--output-format", "text"]
+    if claude_model:
+        command += ["--model", claude_model]
+    # encoding explicite : sous Windows, text=True utiliserait cp1252,
+    # incapable d'encoder « → » (présent dans le prompt) ou « œ »
+    result = subprocess.run(
+        command,
+        input=prompt,
+        capture_output=True, timeout=900,
+        encoding="utf-8", errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"claude -p a échoué ({label}): {result.stderr.strip()[:500]}"
+        )
+    return result.stdout.strip()
+
+
+def correct_text(text: str, claude_model: str | None = None) -> str:
+    """Corrige le transcript par morceaux via `claude -p` (headless)."""
     prompt_header = CORRECTION_PROMPT.format(glossary=load_glossary())
     chunks = split_into_chunks(text)
     corrected = []
     for index, chunk in enumerate(chunks, start=1):
         print(f"\r  correction Claude {index}/{len(chunks)}…",
               end="", flush=True)
-        command = ["claude", "-p", "--output-format", "text"]
-        if claude_model:
-            command += ["--model", claude_model]
-        # encoding explicite : sous Windows, text=True utiliserait cp1252,
-        # incapable d'encoder « → » (présent dans le prompt) ou « œ »
-        result = subprocess.run(
-            command,
-            input=prompt_header + chunk,
-            capture_output=True, timeout=900,
-            encoding="utf-8", errors="replace",
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"claude -p a échoué (chunk {index}/{len(chunks)}): "
-                f"{result.stderr.strip()[:500]}"
-            )
-        output = result.stdout.strip()
+        output = run_claude(prompt_header + chunk, claude_model,
+                            label=f"chunk {index}/{len(chunks)}")
         # garde-fous : si la réponse s'écarte trop de l'original (résumé,
         # refus, commentaire) ou si les horodatages [h:mm:ss] ne sont pas
         # conservés à l'identique, on garde le texte d'origine
@@ -198,6 +259,43 @@ def correct_text(text: str, claude_model: str | None = None) -> str:
         corrected.append(output)
     print()
     return "\n\n".join(corrected) + "\n"
+
+
+def summarize_text(text: str, claude_model: str | None = None) -> str:
+    """Résume le transcript via `claude -p` ; retourne du Markdown.
+
+    Un transcript trop long pour un seul appel est résumé par parties,
+    puis les résumés partiels sont fusionnés en un second passage.
+    """
+    glossary = load_glossary()
+    chunks = split_into_chunks(text, SUMMARY_CHUNK_CHARS)
+    if len(chunks) == 1:
+        print("  résumé Claude…", end="", flush=True)
+        summary = run_claude(SUMMARY_PROMPT.format(glossary=glossary) + text,
+                             claude_model, label="résumé")
+    else:
+        parts = []
+        for index, chunk in enumerate(chunks, start=1):
+            print(f"\r  résumé Claude, partie {index}/{len(chunks)}…",
+                  end="", flush=True)
+            prompt = SUMMARY_PART_PROMPT.format(
+                glossary=glossary, part=index, parts=len(chunks))
+            part = run_claude(prompt + chunk, claude_model,
+                              label=f"résumé partie {index}/{len(chunks)}")
+            if not part:
+                raise RuntimeError(
+                    f"réponse vide de claude -p (partie {index})")
+            parts.append(part)
+        print("\r  résumé Claude, fusion des parties…", end="", flush=True)
+        summary = run_claude(
+            SUMMARY_MERGE_PROMPT + "\n\n---\n\n".join(
+                f"## Partie {i}/{len(parts)}\n\n{part}"
+                for i, part in enumerate(parts, start=1)),
+            claude_model, label="fusion du résumé")
+    print()
+    if not summary:
+        raise RuntimeError("réponse vide de claude -p (résumé)")
+    return summary + "\n"
 
 
 def setup_windows_cuda_dlls():
@@ -387,10 +485,12 @@ def preflight(model_name: str, need_drive: bool,
     if need_claude:
         version = claude_cli_version()
         if version:
-            check("ok", f"Claude Code ({version}) pour la correction")
+            check("ok", f"Claude Code ({version}) pour la correction / "
+                        "le résumé")
         else:
             check("fail", "Claude Code introuvable (commande `claude`) — "
-                          "requis pour --correct/--fix ; voir README.md")
+                          "requis pour --correct/--fix/--summarize ; "
+                          "voir README.md")
         if SCRIPT_GLOSSARY_FILE.exists():
             count = len([line for line in SCRIPT_GLOSSARY_FILE.read_text(
                 encoding="utf-8").splitlines()
@@ -635,12 +735,15 @@ def download_file(drive, file: dict, dest_dir: Path) -> Path:
 
 
 def create_google_doc(drive, folder_id: str, doc_name: str, text: str,
-                      corrected: bool = False) -> str:
+                      corrected: bool = False,
+                      mimetype: str = "text/plain") -> str:
+    """Crée un Google Doc à partir de texte brut (ou Markdown, converti
+    par Drive en titres/listes)."""
     from googleapiclient.http import MediaIoBaseUpload
 
     media = MediaIoBaseUpload(
         io.BytesIO(text.encode("utf-8")),
-        mimetype="text/plain",
+        mimetype=mimetype,
         resumable=True,
     )
     metadata = {
@@ -669,23 +772,50 @@ def export_google_doc(drive, doc_id: str) -> str:
     return data.decode("utf-8").lstrip("﻿")
 
 
-def update_google_doc(drive, doc_id: str, text: str):
-    """Remplace le contenu d'un Google Doc (même id, même lien) et le
-    marque comme corrigé (appProperties)."""
+def update_google_doc(drive, doc_id: str, text: str,
+                      corrected: bool = True,
+                      mimetype: str = "text/plain"):
+    """Remplace le contenu d'un Google Doc (même id, même lien), et le
+    marque comme corrigé (appProperties) si `corrected`."""
     from googleapiclient.http import MediaIoBaseUpload
 
     media = MediaIoBaseUpload(
         io.BytesIO(text.encode("utf-8")),
-        mimetype="text/plain",
+        mimetype=mimetype,
         resumable=True,
     )
+    body = {"appProperties": {CORRECTED_PROP: "1"}} if corrected else {}
     (
         drive.files()
-        .update(fileId=doc_id, media_body=media,
-                body={"appProperties": {CORRECTED_PROP: "1"}},
+        .update(fileId=doc_id, media_body=media, body=body,
                 supportsAllDrives=True)
         .execute()
     )
+
+
+def write_summary_doc(drive, folder_id: str, doc_name: str, markdown: str,
+                      existing_id: str | None = None) -> str:
+    """Crée (ou remplace, si `existing_id`) le Doc de résumé.
+
+    Le Markdown est importé tel quel (Drive le convertit en titres et
+    listes) ; si la conversion est refusée, repli en texte brut.
+    """
+    from googleapiclient.errors import HttpError
+
+    for mimetype in ("text/markdown", "text/plain"):
+        try:
+            if existing_id:
+                update_google_doc(drive, existing_id, markdown,
+                                  corrected=False, mimetype=mimetype)
+                return f"https://docs.google.com/document/d/{existing_id}"
+            return create_google_doc(drive, folder_id, doc_name, markdown,
+                                     mimetype=mimetype)
+        except HttpError as exc:
+            if mimetype == "text/markdown" and exc.resp.status == 400:
+                print("\n  import Markdown refusé par Drive, repli en texte "
+                      "brut", file=sys.stderr)
+                continue
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -1041,6 +1171,112 @@ def run_fix_local(args, source: Path) -> int:
     return 1 if failed else 0
 
 
+def run_summary_drive(args) -> int:
+    """Résume via Claude les Google Docs de transcript déjà produits.
+
+    Pour chaque fichier audio/vidéo dont le Doc de transcript existe dans
+    le même sous-dossier, crée à côté un Doc « <nom> - résumé ». Un résumé
+    existant est ignoré (--force pour le régénérer, en place).
+    """
+    session = DriveSession()
+    folder_id = extract_folder_id(args.source)
+    files, existing_docs = session.call(
+        "listing du dossier",
+        lambda d: scan_drive_folder(d, folder_id, debug=args.debug))
+
+    targets, skipped = [], []
+    for file in files:
+        base_name = Path(file["name"]).stem
+        doc = existing_docs.get((file["parentId"], base_name))
+        if not doc:
+            continue
+        summary_name = base_name + SUMMARY_SUFFIX
+        summary = existing_docs.get((file["parentId"], summary_name))
+        if summary and not args.force:
+            skipped.append(file["relpath"])
+        else:
+            targets.append((file["relpath"], file["parentId"], summary_name,
+                            doc["id"], summary["id"] if summary else None))
+    if skipped:
+        print(f"{len(skipped)} transcript(s) déjà résumé(s), ignoré(s) "
+              "(--force pour régénérer).")
+    if not targets:
+        print("Aucun Google Doc de transcript à résumer dans ce dossier.")
+        return 0
+    print(f"{len(targets)} transcript(s) à résumer (sous-dossiers compris).")
+
+    done, failed = [], []
+    for relpath, parent_id, summary_name, doc_id, summary_id in targets:
+        print(f"\n=== {relpath} ===")
+        try:
+            text = session.call(
+                "lecture du Doc",
+                lambda d: export_google_doc(d, doc_id))
+            summary = summarize_text(text, args.claude_model)
+            link = session.call(
+                "écriture du résumé",
+                lambda d: write_summary_doc(d, parent_id, summary_name,
+                                            summary, summary_id))
+            verb = "mis à jour" if summary_id else "créé"
+            print(f"  Google Doc « {summary_name} » {verb}: {link}")
+            done.append(relpath)
+        except Exception as exc:
+            print(f"  ERREUR: {exc}", file=sys.stderr)
+            failed.append(relpath)
+
+    print(f"\nTerminé: {len(done)} résumé(s), {len(skipped)} ignoré(s), "
+          f"{len(failed)} en erreur.")
+    for name in failed:
+        print(f"  échec: {name}", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def run_summary_local(args, source: Path) -> int:
+    """Résume via Claude des transcripts .txt, en « <nom> - résumé.md »."""
+    if source.is_dir():
+        files = sorted(p for p in source.rglob("*.txt") if p.is_file()
+                       and not p.stem.endswith(SUMMARY_SUFFIX))
+    elif source.suffix.lower() == ".txt":
+        files = [source]
+    else:
+        print("--summarize en local attend un fichier .txt ou un dossier "
+              "en contenant.", file=sys.stderr)
+        return 1
+    if not files:
+        print("Aucun fichier .txt à résumer.")
+        return 0
+
+    todo, skipped = [], []
+    for path in files:
+        rel = str(path.relative_to(source) if source.is_dir() else path.name)
+        out_path = path.with_name(path.stem + SUMMARY_SUFFIX + ".md")
+        if out_path.exists() and not args.force:
+            skipped.append(rel)
+        else:
+            todo.append((path, rel, out_path))
+    if skipped:
+        print(f"{len(skipped)} fichier(s) déjà résumé(s), ignoré(s) "
+              "(--force pour régénérer).")
+    print(f"{len(todo)} fichier(s) .txt à résumer.")
+
+    done, failed = [], []
+    for path, rel, out_path in todo:
+        print(f"\n=== {rel} ===")
+        try:
+            summary = summarize_text(path.read_text(encoding="utf-8"),
+                                     args.claude_model)
+            out_path.write_text(summary, encoding="utf-8")
+            print(f"  écrit: {out_path}")
+            done.append(rel)
+        except Exception as exc:
+            print(f"  ERREUR: {exc}", file=sys.stderr)
+            failed.append(rel)
+
+    print(f"\nTerminé: {len(done)} résumé(s), {len(skipped)} ignoré(s), "
+          f"{len(failed)} en erreur.")
+    return 1 if failed else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Transcrit les fichiers audio/vidéo d'un dossier Google "
@@ -1069,7 +1305,8 @@ def main() -> int:
                         help="préfixer chaque paragraphe de [h:mm:ss]")
     parser.add_argument("--force", action="store_true",
                         help="retraiter même si déjà transcrit (ou déjà "
-                             "corrigé, avec --fix)")
+                             "corrigé avec --fix, déjà résumé avec "
+                             "--summarize)")
     parser.add_argument("--txt", metavar="DIR", default=None,
                         help="écrire des fichiers .txt dans DIR au lieu de "
                              "créer des Google Docs")
@@ -1081,9 +1318,15 @@ def main() -> int:
                         help="ne rien transcrire : corriger via Claude les "
                              "Google Docs (ou .txt) déjà produits pour les "
                              "fichiers audio/vidéo du dossier")
+    parser.add_argument("--summarize", action="store_true",
+                        help="ne rien transcrire : résumer via Claude les "
+                             "Google Docs (ou .txt) de transcript déjà "
+                             "produits, dans un Doc « <nom> - résumé » "
+                             "créé à côté")
     parser.add_argument("--claude-model", default=None, metavar="MODEL",
                         help="modèle passé à `claude -p` pour la correction "
-                             "(défaut: modèle configuré dans Claude Code)")
+                             "et le résumé (défaut: modèle configuré dans "
+                             "Claude Code)")
     args = parser.parse_args()
 
     if args.language and args.language.lower() == "auto":
@@ -1092,6 +1335,9 @@ def main() -> int:
     if not args.check and not args.source:
         parser.error("préciser une source (dossier Drive ou chemin local), "
                      "ou --check pour vérifier l'installation")
+    if args.fix and args.summarize:
+        parser.error("--fix et --summarize s'excluent : lancer d'abord "
+                     "--fix, puis --summarize")
 
     # Le pipeline tourne dans un thread démon : le thread principal ne fait
     # qu'attendre par petites tranches, et reste donc capable de traiter
@@ -1139,12 +1385,16 @@ def run(args) -> int:
 
     local = Path(args.source).expanduser()
     is_local = local.exists()
-    need_claude = args.correct or args.fix
+    need_claude = args.correct or args.fix or args.summarize
+    need_whisper = not (args.fix or args.summarize)
     if not preflight(args.model, need_drive=not is_local,
-                     need_claude=need_claude, need_whisper=not args.fix):
+                     need_claude=need_claude, need_whisper=need_whisper):
         return 1
     if args.fix:
         return run_fix_local(args, local) if is_local else run_fix_drive(args)
+    if args.summarize:
+        return (run_summary_local(args, local) if is_local
+                else run_summary_drive(args))
     if is_local:
         return run_local(args, local)
     return run_drive(args)

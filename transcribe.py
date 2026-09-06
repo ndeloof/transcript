@@ -570,11 +570,10 @@ def preflight(model_name: str, need_drive: bool,
 # ---------------------------------------------------------------------------
 
 
-def get_drive_service():
+def get_google_creds():
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
 
     creds = None
     if TOKEN_FILE.exists():
@@ -598,7 +597,19 @@ def get_drive_service():
         creds = flow.run_local_server(port=0)
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         TOKEN_FILE.write_text(creds.to_json())
-    return build("drive", "v3", credentials=creds)
+    return creds
+
+
+def get_drive_service():
+    from googleapiclient.discovery import build
+
+    return build("drive", "v3", credentials=get_google_creds())
+
+
+def get_docs_service():
+    from googleapiclient.discovery import build
+
+    return build("docs", "v1", credentials=get_google_creds())
 
 
 class DriveSession:
@@ -614,6 +625,7 @@ class DriveSession:
 
     def __init__(self):
         self._service = None
+        self._docs_service = None
 
     @property
     def service(self):
@@ -621,13 +633,19 @@ class DriveSession:
             self._service = get_drive_service()
         return self._service
 
-    def call(self, label: str, fn):
+    @property
+    def docs_service(self):
+        if self._docs_service is None:
+            self._docs_service = get_docs_service()
+        return self._docs_service
+
+    def _call(self, label: str, fn, get_service, reset_service):
         import httplib2
         from googleapiclient.errors import HttpError
 
         for attempt in range(1, self.ATTEMPTS + 1):
             try:
-                return fn(self.service)
+                return fn(get_service())
             except Exception as exc:
                 retryable = (
                     isinstance(exc, (OSError, httplib2.HttpLib2Error))
@@ -641,7 +659,17 @@ class DriveSession:
                       f"{attempt}/{self.ATTEMPTS - 1} dans {delay}s…",
                       file=sys.stderr)
                 time.sleep(delay)
-                self._service = None  # connexion neuve
+                reset_service()  # connexion neuve
+
+    def call(self, label: str, fn):
+        def reset():
+            self._service = None
+        return self._call(label, fn, lambda: self.service, reset)
+
+    def call_docs(self, label: str, fn):
+        def reset():
+            self._docs_service = None
+        return self._call(label, fn, lambda: self.docs_service, reset)
 
 
 def extract_folder_id(arg: str) -> str:
@@ -859,6 +887,57 @@ def write_summary_doc(drive, folder_id: str, doc_name: str, markdown: str,
                       "brut", file=sys.stderr)
                 continue
             raise
+
+
+def doc_id_from_link(link: str) -> str | None:
+    """Extrait l'ID d'un Doc depuis son webViewLink."""
+    match = re.search(r"/document/d/([\w-]+)", link)
+    return match.group(1) if match else None
+
+
+CM_TO_PT = 28.3464567
+A4_WIDTH_PT = 21.0 * CM_TO_PT
+A4_HEIGHT_PT = 29.7 * CM_TO_PT
+MARGIN_2CM_PT = 2.0 * CM_TO_PT
+
+
+def style_summary_doc(docs, doc_id: str):
+    """Met en page le Doc de résumé : A4, marges de 2 cm, et le style
+    « Normal » en Calibri 12, paragraphes justifiés."""
+    requests = [
+        {
+            "updateDocumentStyle": {
+                "documentStyle": {
+                    "pageSize": {
+                        "width": {"magnitude": A4_WIDTH_PT, "unit": "PT"},
+                        "height": {"magnitude": A4_HEIGHT_PT, "unit": "PT"},
+                    },
+                    "marginTop": {"magnitude": MARGIN_2CM_PT, "unit": "PT"},
+                    "marginBottom": {"magnitude": MARGIN_2CM_PT, "unit": "PT"},
+                    "marginLeft": {"magnitude": MARGIN_2CM_PT, "unit": "PT"},
+                    "marginRight": {"magnitude": MARGIN_2CM_PT, "unit": "PT"},
+                },
+                "fields": "pageSize,marginTop,marginBottom,marginLeft,"
+                          "marginRight",
+            }
+        },
+        {
+            "updateNamedStyleRequest": {
+                "namedStyle": {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "textStyle": {
+                        "weightedFontFamily": {"fontFamily": "Calibri"},
+                        "fontSize": {"magnitude": 12, "unit": "PT"},
+                    },
+                    "paragraphStyle": {"alignment": "JUSTIFIED"},
+                },
+                "fields": "textStyle.weightedFontFamily,textStyle.fontSize,"
+                          "paragraphStyle.alignment",
+            }
+        },
+    ]
+    docs.documents().batchUpdate(
+        documentId=doc_id, body={"requests": requests}).execute()
 
 
 # ---------------------------------------------------------------------------
@@ -1260,6 +1339,11 @@ def run_summary_drive(args) -> int:
                 "écriture du résumé",
                 lambda d: write_summary_doc(d, parent_id, summary_name,
                                             summary, summary_id))
+            style_id = summary_id or doc_id_from_link(link)
+            if style_id:
+                session.call_docs(
+                    "mise en forme du résumé",
+                    lambda docs: style_summary_doc(docs, style_id))
             verb = "mis à jour" if summary_id else "créé"
             print(f"  Google Doc « {summary_name} » {verb}: {link}")
             done.append(relpath)

@@ -980,8 +980,9 @@ MARGIN_2CM_PT = 2.0 * CM_TO_PT
 
 
 def style_summary_doc(docs, doc_id: str):
-    """Met en page le Doc de résumé : A4, marges de 2 cm, et le corps du
-    texte en Calibri 12, paragraphes justifiés."""
+    """Met en page le Doc de résumé : A4, marges de 2 cm, corps du texte en
+    Calibri 12 justifié ; les titres gardent leur style (Calibri, taille
+    et gras de Titre 1/2…)."""
     requests = [
         {
             "updateDocumentStyle": {
@@ -1002,28 +1003,57 @@ def style_summary_doc(docs, doc_id: str):
     ]
 
     document = docs.documents().get(documentId=doc_id).execute()
-    end_index = document["body"]["content"][-1]["endIndex"]
-    if end_index > 1:
-        body_range = {"startIndex": 1, "endIndex": end_index - 1}
-        requests += [
-            {
-                "updateTextStyle": {
-                    "range": body_range,
-                    "textStyle": {
-                        "weightedFontFamily": {"fontFamily": "Calibri"},
-                        "fontSize": {"magnitude": 12, "unit": "PT"},
-                    },
-                    "fields": "weightedFontFamily,fontSize",
-                }
-            },
-            {
-                "updateParagraphStyle": {
-                    "range": body_range,
-                    "paragraphStyle": {"alignment": "JUSTIFIED"},
-                    "fields": "alignment",
-                }
-            },
-        ]
+    for element in document["body"]["content"]:
+        paragraph = element.get("paragraph")
+        if not paragraph:
+            continue
+        start, end = element["startIndex"], element["endIndex"] - 1
+        if end <= start:
+            continue  # paragraphe vide
+        text_range = {"startIndex": start, "endIndex": end}
+        style = paragraph["paragraphStyle"].get("namedStyleType")
+        if style == "NORMAL_TEXT":
+            requests += [
+                {
+                    "updateTextStyle": {
+                        "range": text_range,
+                        "textStyle": {
+                            "weightedFontFamily": {"fontFamily": "Calibri"},
+                            "fontSize": {"magnitude": 12, "unit": "PT"},
+                        },
+                        "fields": "weightedFontFamily,fontSize",
+                    }
+                },
+                {
+                    "updateParagraphStyle": {
+                        "range": text_range,
+                        "paragraphStyle": {"alignment": "JUSTIFIED"},
+                        "fields": "alignment",
+                    }
+                },
+            ]
+        else:
+            # titres : police Calibri ; bold et fontSize listés sans valeur =
+            # retour au gras et à la taille du style de titre (l'import
+            # Markdown pose bold:false sur les runs, ce qui les annulerait)
+            requests += [
+                {
+                    "updateTextStyle": {
+                        "range": text_range,
+                        "textStyle": {
+                            "weightedFontFamily": {"fontFamily": "Calibri"},
+                        },
+                        "fields": "weightedFontFamily,fontSize,bold",
+                    }
+                },
+                {
+                    "updateParagraphStyle": {
+                        "range": text_range,
+                        "paragraphStyle": {"alignment": "START"},
+                        "fields": "alignment",
+                    }
+                },
+            ]
 
     docs.documents().batchUpdate(
         documentId=doc_id, body={"requests": requests}).execute()

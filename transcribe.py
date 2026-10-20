@@ -12,7 +12,7 @@
 """Transcrit des fichiers audio/vidéo Google Drive en Google Docs via Whisper.
 
 Usage:
-    uv run transcribe.py <dossier-drive (URL ou ID)> [options]
+    uv run transcribe.py <dossier-ou-fichier-drive (URL ou ID)> [options]
     uv run transcribe.py <fichier-ou-dossier-local> [options]
 
 Pré-requis : ~/.transcribe/credentials.json (client OAuth "Desktop app",
@@ -672,18 +672,96 @@ class DriveSession:
         return self._call(label, fn, lambda: self.docs_service, reset)
 
 
-def extract_folder_id(arg: str) -> str:
-    """Accepte l'URL complète d'un dossier Drive ou son ID nu."""
-    match = re.search(r"/folders/([A-Za-z0-9_-]+)", arg)
+FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
+
+
+def extract_drive_id(arg: str) -> str:
+    """Accepte l'URL d'un dossier, d'un fichier ou d'un Doc Drive, ou un ID nu."""
+    match = re.search(r"/(?:folders|file/d|document/d)/([A-Za-z0-9_-]+)", arg)
+    if match:
+        return match.group(1)
+    match = re.search(r"[?&]id=([A-Za-z0-9_-]+)", arg)
     if match:
         return match.group(1)
     return arg.split("?")[0]
 
 
-FOLDER_MIME = "application/vnd.google-apps.folder"
+def file_base_name(file: dict) -> str:
+    """Nom (sans extension) du Doc de transcript associé à un fichier."""
+    return file.get("stem") or Path(file["name"]).stem
 
 
-SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
+def resolve_drive_source(drive, arg: str,
+                         debug: bool = False) -> tuple[list[dict], dict]:
+    """Résout la source Drive : un dossier (parcouru récursivement) ou un
+    fichier précis (audio/vidéo, ou Doc de transcript pour --fix/--summarize).
+
+    Retourne le même couple que scan_drive_folder. Pour un fichier, les Docs
+    existants sont ceux de son dossier parent (sans descendre dans les
+    sous-dossiers).
+    """
+    file_id = extract_drive_id(arg)
+    meta = drive.files().get(
+        fileId=file_id, supportsAllDrives=True,
+        fields="id, name, mimeType, size, parents, shortcutDetails",
+    ).execute()
+    if meta["mimeType"] == SHORTCUT_MIME:
+        target_id = (meta.get("shortcutDetails") or {}).get("targetId")
+        if not target_id:
+            sys.exit(f"Raccourci Drive « {meta['name']} » sans cible.")
+        meta = drive.files().get(
+            fileId=target_id, supportsAllDrives=True,
+            fields="id, name, mimeType, size, parents",
+        ).execute()
+    mime = meta["mimeType"]
+    if mime == FOLDER_MIME:
+        return scan_drive_folder(drive, meta["id"], debug=debug)
+
+    is_media = mime.startswith(("audio/", "video/"))
+    if not is_media and mime != GOOGLE_DOC_MIME:
+        sys.exit(f"« {meta['name']} » ({mime}) n'est ni un dossier, ni un "
+                 "fichier audio/vidéo, ni un Google Doc.")
+    parents = meta.get("parents")
+    if not parents:
+        sys.exit(f"« {meta['name']} » n'a pas de dossier parent accessible : "
+                 "impossible d'y retrouver ou créer les Docs associés "
+                 "(ajouter le fichier à un dossier de « Mon Drive »).")
+    parent_id = parents[0]
+
+    existing_docs = {}
+    page_token = None
+    while True:
+        response = drive.files().list(
+            q=f"'{parent_id}' in parents and trashed = false and "
+              f"mimeType = '{GOOGLE_DOC_MIME}'",
+            fields="nextPageToken, files(id, name, appProperties)",
+            pageSize=100, pageToken=page_token,
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+        ).execute()
+        for f in response.get("files", []):
+            existing_docs[(parent_id, f["name"])] = {
+                "id": f["id"],
+                "corrected": (f.get("appProperties") or {})
+                .get(CORRECTED_PROP) == "1",
+            }
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    file = {
+        "id": meta["id"],
+        "name": meta["name"],
+        "mimeType": mime,
+        "size": meta.get("size", 0),
+        "parentId": parent_id,
+        "relpath": meta["name"],
+    }
+    if mime == GOOGLE_DOC_MIME:
+        file["stem"] = meta["name"]
+    return [file], existing_docs
 
 
 def scan_drive_folder(drive, folder_id: str,
@@ -902,8 +980,8 @@ MARGIN_2CM_PT = 2.0 * CM_TO_PT
 
 
 def style_summary_doc(docs, doc_id: str):
-    """Met en page le Doc de résumé : A4, marges de 2 cm, et le style
-    « Normal » en Calibri 12, paragraphes justifiés."""
+    """Met en page le Doc de résumé : A4, marges de 2 cm, et le corps du
+    texte en Calibri 12, paragraphes justifiés."""
     requests = [
         {
             "updateDocumentStyle": {
@@ -921,21 +999,32 @@ def style_summary_doc(docs, doc_id: str):
                           "marginRight",
             }
         },
-        {
-            "updateNamedStyleRequest": {
-                "namedStyle": {
-                    "namedStyleType": "NORMAL_TEXT",
+    ]
+
+    document = docs.documents().get(documentId=doc_id).execute()
+    end_index = document["body"]["content"][-1]["endIndex"]
+    if end_index > 1:
+        body_range = {"startIndex": 1, "endIndex": end_index - 1}
+        requests += [
+            {
+                "updateTextStyle": {
+                    "range": body_range,
                     "textStyle": {
                         "weightedFontFamily": {"fontFamily": "Calibri"},
                         "fontSize": {"magnitude": 12, "unit": "PT"},
                     },
+                    "fields": "weightedFontFamily,fontSize",
+                }
+            },
+            {
+                "updateParagraphStyle": {
+                    "range": body_range,
                     "paragraphStyle": {"alignment": "JUSTIFIED"},
-                },
-                "fields": "textStyle.weightedFontFamily,textStyle.fontSize,"
-                          "paragraphStyle.alignment",
-            }
-        },
-    ]
+                    "fields": "alignment",
+                }
+            },
+        ]
+
     docs.documents().batchUpdate(
         documentId=doc_id, body={"requests": requests}).execute()
 
@@ -1045,10 +1134,14 @@ def transcribe_file(model, path: Path, language: str | None,
 
 def run_drive(args) -> int:
     session = DriveSession()
-    folder_id = extract_folder_id(args.source)
     files, existing_docs = session.call(
-        "listing du dossier",
-        lambda d: scan_drive_folder(d, folder_id, debug=args.debug))
+        "résolution de la source",
+        lambda d: resolve_drive_source(d, args.source, debug=args.debug))
+    if any(f["mimeType"] == GOOGLE_DOC_MIME for f in files):
+        print("La source est un Google Doc, pas un fichier audio/vidéo : "
+              "rien à transcrire (utiliser --fix ou --summarize).",
+              file=sys.stderr)
+        return 1
     if not files:
         print("Aucun fichier audio/vidéo dans ce dossier "
               "(sous-dossiers compris).")
@@ -1059,7 +1152,7 @@ def run_drive(args) -> int:
     model = None
     done, skipped, failed = [], [], []
     for file in files:
-        base_name = Path(file["name"]).stem
+        base_name = file_base_name(file)
         print(f"\n=== {file['relpath']} ===")
         try:
             if args.txt:
@@ -1170,15 +1263,14 @@ def run_fix_drive(args) -> int:
     sous-dossier sont traités ; le Doc est mis à jour en place (même lien).
     """
     session = DriveSession()
-    folder_id = extract_folder_id(args.source)
     files, existing_docs = session.call(
-        "listing du dossier",
-        lambda d: scan_drive_folder(d, folder_id, debug=args.debug))
+        "résolution de la source",
+        lambda d: resolve_drive_source(d, args.source, debug=args.debug))
 
     targets = []
     skipped = []
     for file in files:
-        base_name = Path(file["name"]).stem
+        base_name = file_base_name(file)
         doc = existing_docs.get((file["parentId"], base_name))
         if not doc:
             continue
@@ -1301,14 +1393,13 @@ def run_summary_drive(args) -> int:
     existant est ignoré (--force pour le régénérer, en place).
     """
     session = DriveSession()
-    folder_id = extract_folder_id(args.source)
     files, existing_docs = session.call(
-        "listing du dossier",
-        lambda d: scan_drive_folder(d, folder_id, debug=args.debug))
+        "résolution de la source",
+        lambda d: resolve_drive_source(d, args.source, debug=args.debug))
 
     targets, skipped = [], []
     for file in files:
-        base_name = Path(file["name"]).stem
+        base_name = file_base_name(file)
         doc = existing_docs.get((file["parentId"], base_name))
         if not doc:
             continue
@@ -1413,8 +1504,9 @@ def main() -> int:
     parser.add_argument(
         "source",
         nargs="?",
-        help="URL ou ID d'un dossier Google Drive, ou chemin local "
-             "(fichier ou dossier)",
+        help="URL ou ID d'un dossier ou d'un fichier Google Drive (audio/"
+             "vidéo, ou Doc de transcript avec --fix/--summarize), ou "
+             "chemin local (fichier ou dossier)",
     )
     parser.add_argument("--check", action="store_true",
                         help="vérifier l'installation (dépendances, GPU, "

@@ -88,7 +88,17 @@ uv run transcribe.py <ID-dossier> --fix
 # Résumer les Google Docs de transcript déjà produits
 # → un Doc « <nom> - résumé » créé à côté de chacun
 uv run transcribe.py <ID-dossier> --summarize
+
+# Cibler UN seul fichier (URL /file/d/<ID>/view ou /document/d/<ID>, ou ID nu) :
+# le fichier audio/vidéo, ou son Doc de transcript, fonctionne pour
+# la transcription, --fix et --summarize
+uv run transcribe.py "https://drive.google.com/file/d/<ID>/view" --summarize
 ```
+
+Avec un fichier plutôt qu'un dossier, les Docs associés (transcript,
+résumé) sont cherchés et créés dans le dossier parent du fichier (sans
+descendre dans les sous-dossiers). Un fichier sans dossier parent accessible
+(partagé directement, sans dossier) est refusé.
 
 Le même bilan d'environnement s'affiche au début de chaque lancement.
 
